@@ -29,55 +29,11 @@ tokenizer, model = load_model_and_tokenizer()
 # ページ 1: 次元削減技術の比較
 if page == "Dimensionality Reduction":
     # テキスト入力
-    text = st.text_area("Enter Text", """
-    Dogs are said to be man's best friend. Dogs are loyal and playful, and loved by many people.
-    Additionally, dogs are active as police dogs, guide dogs, and therapy dogs. They are known for their ability
-    to detect scents, track missing persons, and provide comfort to those in need. Dogs have been companions to humans
-    for thousands of years, playing significant roles in various cultures and histories.
-
-    Dog breeds include Chihuahua, Golden Retriever, Shiba Inu, Labrador Retriever, German Shepherd, and Dachshund.
-    Each breed has its unique characteristics. For example, the Golden Retriever is renowned for its friendly and
-    intelligent demeanor, while the Shiba Inu is celebrated for its independence and spirited personality.
-    Labrador Retrievers are popular for their reliability and use in guide dog programs, and Dachshunds are admired for
-    their playful and bold nature despite their small size.
-
-    In rural areas, dogs are often employed to protect livestock, guard properties, and assist in hunting. Breeds such as
-    the Border Collie, Akita Inu, and Great Pyrenees excel in these roles due to their intelligence and resilience.
-    In urban settings, dogs are cherished as household pets. Parks, cafes, and even office spaces are increasingly
-    becoming dog-friendly, highlighting their integration into modern human life.
-
-    Beyond dogs, the animal kingdom offers an incredible variety of species. Cats, for instance, are independent and
-    curious animals often kept as pets. Birds, such as parrots and canaries, captivate humans with their vibrant colors
-    and melodious songs. Fish, including goldfish and bettas, are admired for their serene presence and low-maintenance care.
-    Reptiles, such as turtles, lizards, and snakes, attract those fascinated by exotic pets.
-
-    Wild animals, like lions, tigers, elephants, and bears, play essential roles in their ecosystems. Elephants, often
-    referred to as ecosystem engineers, help shape their environments by creating water holes and spreading seeds over
-    vast distances. Tigers, as apex predators, ensure the balance of prey populations in forests, maintaining biodiversity.
-
-    Marine life, including whales, dolphins, sharks, and jellyfish, showcases the immense diversity of the ocean.
-    Whales, with their complex communication and migratory patterns, have fascinated scientists for generations.
-    Dolphins are known for their playful behavior and intelligence, often interacting with humans in unique ways.
-
-    The animal kingdom also includes insects like bees and butterflies, which play critical roles in pollination,
-    supporting agriculture and plant diversity. Amphibians, such as frogs and salamanders, thrive in moist environments
-    and serve as vital indicators of ecological health.
-
-    Efforts to conserve endangered species are more important than ever. Animals such as pandas, rhinos, and cheetahs
-    face threats due to habitat destruction, climate change, and poaching. Conservation programs aim to protect these
-    species and raise awareness about their significance to global ecosystems.
-
-    Throughout history, animals have inspired art, literature, and cultural traditions. From ancient cave paintings
-    depicting wild animals to modern-day stories of heroic pets, the bond between humans and animals has always been profound.
-    As we continue to learn about the natural world, fostering a deeper understanding of animals and their roles in
-    ecosystems will be essential for achieving a sustainable future.
-
-    From the loyal dog by your side to the majestic eagle soaring in the sky, animals enrich our lives and teach us
-    valuable lessons about resilience, adaptation, and coexistence. The beauty and complexity of the animal kingdom
-    are treasures worth protecting for generations to come.
-    """)
-
-
+    # テキスト入力 (ファイルから読み込み)
+    with open("input_text.txt", "r", encoding="utf-8") as file:
+        text = file.read()
+    
+    st.text_area("Input Text from File", text, height=300)
 
     # トークン化と埋め込み取得
     tokens = tokenizer(text, return_tensors="pt", truncation=True, padding=True)
@@ -150,15 +106,13 @@ if page == "Dimensionality Reduction":
         print(f"Index: {idx}, Token: {token}")
 
 
-    # 次元削減手法を選択
     method = st.selectbox(
         "Select Dimensionality Reduction Method",
-        ["PCA", "ICA", "ISOMAP", "LLE", "t-SNE", "UMAP"]
+        ["PCA", "ICA", "ISOMAP", "HessianLLE", "t-SNE", "UMAP"]  # "LLE" を "HessianLLE" に変更
     )
 
-
     # 次元削減を実行する関数
-    def reduce_dimensions(method, embeddings):
+    def reduce_dimensions(method, embeddings, n_neighbors=10):
         # リストを numpy.ndarray に変換
         embeddings = np.array(embeddings)
 
@@ -168,8 +122,10 @@ if page == "Dimensionality Reduction":
             reducer = FastICA(n_components=2)
         elif method == "ISOMAP":
             reducer = Isomap(n_components=2)
-        elif method == "LLE":
-            reducer = LocallyLinearEmbedding(n_components=2)
+        elif method == "HessianLLE":
+            if n_neighbors <= (2 * (2 + 3) // 2):  # n_neighborsの下限チェック
+                raise ValueError(f"n_neighbors must be > {2 * (2 + 3) // 2} for HessianLLE with n_components=2.")
+            reducer = LocallyLinearEmbedding(n_components=2, method='hessian', n_neighbors=n_neighbors, eigen_solver='dense')
         elif method == "t-SNE":
             reducer = TSNE(n_components=2, random_state=42, perplexity=min(30, len(embeddings) - 1))
         elif method == "UMAP":
@@ -178,6 +134,12 @@ if page == "Dimensionality Reduction":
             raise ValueError(f"Unknown method: {method}")
 
         return reducer.fit_transform(embeddings)
+
+    # HessianLLE用のn_neighborsを指定
+    if method == "HessianLLE":
+        n_neighbors = st.slider("Select n_neighbors for HessianLLE", min_value=6, max_value=30, value=10, step=1)
+    else:
+        n_neighbors = None
 
     # 次元削減の実行
     selected_indices = dog_indices + unrelated_indices
@@ -220,7 +182,12 @@ if page == "Dimensionality Reduction":
 
 # ページ 2: 内部表現の表示
 elif page == "Internal Representations":
-    text = st.text_area("Enter Text", "Dogs are loyal and intelligent animals.")
+    # テキスト入力 (ファイルから読み込み)
+    with open("input_text.txt", "r", encoding="utf-8") as file:
+        text = file.read()
+
+    st.text_area("Input Text from File (Page 2)", text, height=300)
+    
     tokens = tokenizer(text, return_tensors="pt", truncation=True, padding=True)
     tokens_text = tokenizer.convert_ids_to_tokens(tokens["input_ids"].squeeze(0))
     outputs = model(**tokens)
