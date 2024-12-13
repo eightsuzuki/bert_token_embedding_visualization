@@ -45,15 +45,22 @@ def process_and_save_embeddings():
     else:
         with open("input_text.txt", "r", encoding="utf-8") as input_file:
             text = input_file.read()
-            tokens = tokenizer(text, return_tensors="pt", truncation=True, padding=True)
-            tokens_text = tokenizer.convert_ids_to_tokens(tokens["input_ids"].squeeze(0))
-            outputs = model(**tokens)
-            embeddings = outputs.last_hidden_state.squeeze(0).detach().numpy()
+            tokens_text = []
+            embeddings = []
+
+            for i in range(0, len(text), 512):
+                chunk = text[i:i+512]
+                tokens = tokenizer(chunk, return_tensors="pt", truncation=True, padding=True)
+                tokens_text.extend(tokenizer.convert_ids_to_tokens(tokens["input_ids"].squeeze(0)))
+                outputs = model(**tokens)
+                embeddings.append(outputs.last_hidden_state.squeeze(0).detach().numpy())
+
+            embeddings = np.concatenate(embeddings, axis=0)
 
         data = {
-        "text": text,
-        "tokens_text": tokens_text,
-        "embeddings": embeddings.tolist()
+            "text": text,
+            "tokens_text": tokens_text,
+            "embeddings": embeddings.tolist()
         }
         with open(cache_file, "w", encoding="utf-8") as file:
             json.dump(data, file)   
@@ -63,6 +70,10 @@ def process_and_save_embeddings():
     return text, tokens_text, embeddings
 
 text, tokens_text, embeddings = process_and_save_embeddings()
+
+# 文字数とトークン数を表示
+st.write(f"テキストの文字数: {len(text)}")
+st.write(f"トークン数: {len(tokens_text)}")
 
 # ページ遷移
 if page == "次元削減":
