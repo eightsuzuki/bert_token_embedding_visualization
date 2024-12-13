@@ -13,7 +13,7 @@ st.title("トークン埋め込みの分析と可視化")
 # ページ管理
 page = st.sidebar.selectbox(
     "ページを選択してください",
-    ["次元削減", "内部表現"]
+    ["内部表現", "次元削減"]
 )
 
 # モデルとトークナイザーのロード
@@ -49,14 +49,20 @@ def process_and_save_embeddings():
             embeddings = []
 
             for i in range(0, len(text), 512):
+                # textの長さに基づいて、512文字ごとにループを回す
                 chunk = text[i:i+512]
+                # textから512文字のチャンクを取得する
                 tokens = tokenizer(chunk, return_tensors="pt", truncation=True, padding=True)
+                # チャンクをトークン化し、PyTorchテンソルとして返す。必要に応じてトランケーションとパディングを行う
                 tokens_text.extend(tokenizer.convert_ids_to_tokens(tokens["input_ids"].squeeze(0)))
+                # トークンIDを対応するトークンに変換し、tokens_textリストに追加する
                 outputs = model(**tokens)
+                # トークンをモデルに入力し、出力を取得する
                 embeddings.append(outputs.last_hidden_state.squeeze(0).detach().numpy())
+                # モデルの出力から最後の隠れ層の状態を取得し、NumPy配列に変換してembeddingsリストに追加する
 
             embeddings = np.concatenate(embeddings, axis=0)
-
+            
         data = {
             "text": text,
             "tokens_text": tokens_text,
@@ -67,6 +73,7 @@ def process_and_save_embeddings():
 
         st.write(f"埋め込みをBERTから生成し、\n{cache_file}\n に保存されました")
 
+    st.write(f"BERT embeddings:", embeddings.shape)
     return text, tokens_text, embeddings
 
 text, tokens_text, embeddings = process_and_save_embeddings()
@@ -82,4 +89,4 @@ if page == "次元削減":
 
 elif page == "内部表現":
     import page2_internal_representations
-    page2_internal_representations.render_page(text, tokens_text, embeddings, model)
+    page2_internal_representations.render_page(text, model, tokenizer)
