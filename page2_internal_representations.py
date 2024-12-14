@@ -11,46 +11,57 @@ import torch
 import sys
 sys.dont_write_bytecode = True
 
-
 def render_page(text, model, tokenizer):
     # Tokenize the input text
     inputs = tokenizer(text, return_tensors='pt', truncation=True, max_length=512)
 
-    # Get the hidden states from the model
-    with torch.no_grad():
-        outputs = model(**inputs, output_hidden_states=True)
-        hidden_states = outputs.hidden_states
-
     # Create directory if it doesn't exist
     os.makedirs('cache/internal/embedding', exist_ok=True)
     tokens_text = []
-    embeddings = []
+    embeddings = [[] for _ in range(13)]  # 13 layers including the embedding layer
 
-    # for i in range(0, len(text), 512):
-    #     # Get chunks of text based on length of 512 characters
-    #     chunk = text[i:i+512]
-    #     # Tokenize the chunk and return as PyTorch tensors with truncation and padding if needed
-    #     tokens = tokenizer(chunk, return_tensors="pt", truncation=True, padding=True)
-    #     # Convert token IDs to corresponding tokens and add to tokens_text list
-    #     tokens_text.extend(tokenizer.convert_ids_to_tokens(tokens["input_ids"].squeeze(0)))
-    #     # Get the output from the model
-    #     outputs = model(**tokens, output_hidden_states=True)
-    #     # Get the hidden states from the model's output
-    #     hidden_states = outputs.hidden_states
-    #     # Append the last hidden state to embeddings list
-    #     embeddings.append(hidden_states[-1].squeeze(0).detach().numpy())
+    cache_exists = True
+    for layer_idx in range(13):
+        file_path = f'cache/internal/embedding/hidden_state_layer_{layer_idx}.json'
+        if not os.path.exists(file_path):
+            cache_exists = False
+            break
 
-    # # Save each hidden state to a separate JSON file
-    # for i, hidden_state in enumerate(hidden_states):
-    #     hidden_state_np = hidden_state.squeeze().detach().numpy()
-    #     hidden_state_list = hidden_state_np.tolist()
-    #     file_path = f'cache/internal/embedding/hidden_state_{i}.json'
-    #     st.write(f"Hidden State {i} Shape:", hidden_state_np.shape, len(hidden_state_np))
-    #     with open(file_path, 'w') as f:
-    #         json.dump(hidden_state_list, f)
+    if cache_exists:
+        st.write("Loading embeddings from cache...")
+        for layer_idx in range(13):
+            file_path = f'cache/internal/embedding/hidden_state_layer_{layer_idx}.json'
+            with open(file_path, 'r') as f:
+                layer_embeddings = json.load(f)
+                embeddings[layer_idx] = [np.array(layer_embeddings)]
+    else:
+        st.write("Generating embeddings...")
+        total_chunks = (len(text) + 511) // 512  # Calculate the total number of chunks
+        progress_bar = st.progress(0)  # Initialize the progress bar
+        for i in range(0, len(text), 512):
+            # Split text into chunks of 512 characters
+            chunk = text[i:i+512]
+            # Tokenize and pad/truncate as necessary
+            tokens = tokenizer(chunk, return_tensors="pt", truncation=True, padding=True)
+            # Convert token IDs to tokens and add to tokens_text list
+            tokens_text.extend(tokenizer.convert_ids_to_tokens(tokens["input_ids"].squeeze(0)))
+            # Get the model outputs
+            outputs = model(**tokens, output_hidden_states=True)
+            # Get the hidden states from the model outputs
+            hidden_states = outputs.hidden_states
 
-    # # Display a part of the hidden states
-    # st.write("Hidden State 0 Sample:", hidden_states[0].squeeze().numpy()[:5])
-    # st.text_area("Input Text", text, height=300)
+            # Append the hidden states for each layer to the embeddings list
+            for layer_idx in range(13):
+                embeddings[layer_idx].append(hidden_states[layer_idx].squeeze(0).detach().numpy())
 
+            # Update the progress bar
+            progress = (i // 512 + 1) / total_chunks
+            progress_bar.progress(progress)
 
+        # Save each layer's hidden states to individual JSON files
+        for layer_idx in range(13):
+            layer_embeddings = np.concatenate(embeddings[layer_idx], axis=0)
+            file_path = f'cache/internal/embedding/hidden_state_layer_{layer_idx}.json'
+            st.write(f"Layer {layer_idx} embeddings shape: {layer_embeddings.shape}")
+            with open(file_path, 'w') as f:
+                json.dump(layer_embeddings.tolist(), f)
