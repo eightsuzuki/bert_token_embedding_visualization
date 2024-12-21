@@ -89,4 +89,4 @@ if page == "次元削減":
 
 elif page == "内部表現":
     import page2_internal_representations
-    page2_internal_representations.render_page(text, model, tokenizer)
+    page2_internal_representations.render_page(text, model, tokenizer, tokens_text)
