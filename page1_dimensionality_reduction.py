@@ -125,7 +125,7 @@ def render_page(text, tokens_text, embeddings):
         n_neighbors = None
 
     # Save and load reduced embeddings to/from JSON
-    cache_dir = f"cache/{method}"
+    cache_dir = f"cache/reduce/{method}"
     os.makedirs(cache_dir, exist_ok=True)
     cache_file = os.path.join(cache_dir, f"{text_hash}_{n_neighbors}.json" if n_neighbors else f"{text_hash}.json")
 
@@ -148,9 +148,19 @@ def render_page(text, tokens_text, embeddings):
         return
 
     # Add slider to select the number of points to plot
-    num_points = st.sidebar.slider("Number of points to plot", min_value=100, max_value=len(reduced_embeddings), value=5000, step=100)
+    # サイドバーにスライダーを作成し、プロットするポイントの数を選択する
+    max_points = min(5000, len(reduced_embeddings))
+    if max_points > 100:
+        num_points = st.sidebar.slider("Number of points to plot", min_value=100, max_value=max_points, value=max_points, step=100)
+    else:
+        num_points = max_points
+
+    # reduced_embeddingsからランダムにnum_points個のインデックスを選択する
     random_indices = np.random.choice(len(reduced_embeddings), num_points, replace=False)
+
+    # 選択されたインデックスに基づいてreduced_embeddingsをフィルタリングする
     reduced_embeddings = reduced_embeddings[random_indices]
+
     labels = [labels[i] for i in random_indices]
     tokens = [tokens[i] for i in random_indices]
     colors = {

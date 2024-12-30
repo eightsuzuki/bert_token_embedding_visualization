@@ -76,15 +76,16 @@ def process_and_save_embeddings():
 
 text, tokens_text, embeddings = process_and_save_embeddings()
 
-# 文字数とトークン数を表示
-st.write(f"テキストの文字数: {len(text)}")
-st.write(f"トークン数: {len(tokens_text)}")
-
 # ページ遷移
 if page == "次元削減":
+
+    # 文字数とトークン数を表示
+    st.write(f"テキストの文字数: {len(text)}")
+    st.write(f"トークン数: {len(tokens_text)}")
+
     import page1_dimensionality_reduction
     page1_dimensionality_reduction.render_page(text, tokens_text, embeddings)
 
 elif page == "内部表現":
     import page2_internal_representations
-    page2_internal_representations.render_page(text, model, tokenizer, tokens_text)
+    page2_internal_representations.render_page(text)
