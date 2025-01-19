@@ -12,16 +12,32 @@ import hashlib
 import json
 import torch
 import os
+import imageio
 import plotly.io as pio
+
+# Function to get embeddings from a specific layer
+def get_layer_embeddings(model, inputs, layer_idx):
+    with torch.no_grad():
+        outputs = model(**inputs, output_hidden_states=True)
+    return outputs.hidden_states[layer_idx].squeeze().numpy()
 
 
 # ページ 4: 文脈構造の表現
 def render_page(tokenizer, model):
-    # inputを{Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday}で、何回これを入力できるかの設定をできるようにして、それをtextに保存し、tokenizer, modelを使って埋め込みを取得して
-    days_of_week = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-    num_repeats = st.number_input("Number of repetitions", min_value=1, max_value=100, value=70)
+    # 選択肢を追加
+    option = st.selectbox("Select option", ["Days of the Week", "Months"])
     
-    text = " ".join(days_of_week * num_repeats)
+    if option == "Days of the Week":
+        items = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    else:
+        items = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+    
+    if option == "Days of the Week":
+        num_repeats = st.number_input("Number of repetitions", min_value=1, max_value=100, value=70)
+    else:
+        num_repeats = st.number_input("Number of repetitions", min_value=1, max_value=100, value=40)
+    
+    text = " ".join(items * num_repeats)
     st.text_area("Input Text", text, height=300)
     
     inputs = tokenizer(text, return_tensors="pt")
@@ -31,7 +47,7 @@ def render_page(tokenizer, model):
     embeddings = outputs.last_hidden_state.squeeze().numpy()
     st.write("Embeddings shape:", embeddings.shape)
     # 次元削減の方法を選択
-    reduction_method = st.selectbox("Select dimensionality reduction method", ["PCA", "ICA", "t-SNE", "UMAP"])
+    reduction_method = st.selectbox("Select dimensionality reduction method", ["UMAP", "ICA", "PCA", "t-SNE"])
     
     if reduction_method == "PCA":
         reducer = PCA(n_components=2)
@@ -41,24 +57,67 @@ def render_page(tokenizer, model):
         
     elif reduction_method == "t-SNE":
         reducer = TSNE(n_components=2)
+        
     elif reduction_method == "UMAP":
         reducer = umap.UMAP(n_components=2)
     
     embeddings_reduced = reducer.fit_transform(embeddings)
-    # 曜日ごとに色をつける
-    labels = (days_of_week * num_repeats)[:embeddings.shape[0]]
+    # アイテムごとに色をつける
+    labels = (items * num_repeats)[:embeddings.shape[0]]
     embeddings_reduced = embeddings_reduced[:len(labels)]
     df = pd.DataFrame(embeddings_reduced, columns=["Component 1", "Component 2"])
-    df["Day"] = labels
-
-    # Create the directory if it doesn't exist
-    output_dir = "./image/day_of_week/context_structure"
+    df["Label"] = labels
+    # Create the directory based on the selected option
+    if option == "Days of the Week":
+        output_dir = "./image/context_structure/days"
+    else:
+        output_dir = "./image/context_structure/months"
+    
     os.makedirs(output_dir, exist_ok=True)
 
     title = f"{reduction_method} Reduced Embeddings"
-    fig = px.scatter(df, x="Component 1", y="Component 2", color="Day", title=title)
+    fig = px.scatter(df, x="Component 1", y="Component 2", color="Label", title=title)
     st.plotly_chart(fig)
 
     # Save the figure as an image
     output_path = os.path.join(output_dir, "embedding_plot.png")
     pio.write_image(fig, output_path)
+
+    if st.button("Save Plot as Image"):
+        pio.write_image(fig, output_path)
+        st.success(f"Plot saved as {output_path}")
+
+    if st.button("Plot Intermediate Layers"):
+        intermediate_layers = [i for i in range(0, model.config.num_hidden_layers)]
+        st.write(f"Number of intermediate layers: {len(intermediate_layers)}")
+        images = []
+        for layer_idx in intermediate_layers:
+            # 中間層の埋め込みを取得
+            intermediate_embeddings = get_layer_embeddings(model, inputs, layer_idx)  # 適切な関数で中間層の埋め込みを取得
+
+            # 次元削減
+            intermediate_embeddings_reduced = reducer.fit_transform(intermediate_embeddings)
+            intermediate_embeddings_reduced = intermediate_embeddings_reduced[:len(labels)]
+            df_intermediate = pd.DataFrame(intermediate_embeddings_reduced, columns=["Component 1", "Component 2"])
+            df_intermediate["Label"] = labels
+
+            # プロット
+            fig_intermediate = px.scatter(df_intermediate, x="Component 1", y="Component 2", color="Label", title=f"Layer {layer_idx} - {reduction_method} Reduced Embeddings")
+            fig_intermediate.update_xaxes(range=[-20, 22])  # 座標範囲を固定
+            fig_intermediate.update_yaxes(range=[-20, 22])  # 座標範囲を固定
+            st.plotly_chart(fig_intermediate)
+
+        # 最終層の埋め込みを取得
+        final_embeddings = outputs.last_hidden_state.squeeze().numpy()
+
+        # 次元削減
+        final_embeddings_reduced = reducer.fit_transform(final_embeddings)
+        final_embeddings_reduced = final_embeddings_reduced[:len(labels)]
+        df_final = pd.DataFrame(final_embeddings_reduced, columns=["Component 1", "Component 2"])
+        df_final["Label"] = labels
+
+        # プロット
+        fig_final = px.scatter(df_final, x="Component 1", y="Component 2", color="Label", title=f"Final Layer - {reduction_method} Reduced Embeddings")
+        fig_final.update_xaxes(range=[-20, 22])  # 座標範囲を固定
+        fig_final.update_yaxes(range=[-20, 22])  # 座標範囲を固定
+        st.plotly_chart(fig_final)
