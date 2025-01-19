@@ -44,7 +44,7 @@ def render_page(tokenizer, model):
     with torch.no_grad():
         outputs = model(**inputs)
     
-    embeddings = outputs.last_hidden_state.squeeze().numpy()
+    embeddings = get_layer_embeddings(model, inputs, -1)
     st.write("Embeddings shape:", embeddings.shape)
     # 次元削減の方法を選択
     reduction_method = st.selectbox("Select dimensionality reduction method", ["UMAP", "ICA", "PCA", "t-SNE"])
@@ -106,7 +106,7 @@ def render_page(tokenizer, model):
 
         # 最終層の埋め込みを追加
         final_layer_idx = model.config.num_hidden_layers
-        final_embeddings = outputs.last_hidden_state.squeeze().numpy()
+        final_embeddings = get_layer_embeddings(model, inputs, -1)
         final_embeddings_reduced = reducer.fit_transform(final_embeddings)
         final_embeddings_reduced = final_embeddings_reduced[:len(labels)]
         df_final = pd.DataFrame(final_embeddings_reduced, columns=["Component 1", "Component 2"])
