@@ -13,7 +13,7 @@ st.title("トークン埋め込みの分析と可視化")
 # ページ管理
 page = st.sidebar.selectbox(
     "ページを選択してください",
-    ["内部表現", "次元削減"]
+    ["文脈構造の表現", "次元削減", "内部表現", "文字選択"]
 )
 
 # モデルとトークナイザーのロード
@@ -24,6 +24,12 @@ def load_model_and_tokenizer():
 
 tokenizer, model = load_model_and_tokenizer()
 
+# ここに分岐を作ってpageが 文脈構造の表現 なら新しいページ4での処理を行うようにしてほしい
+if page == "文脈構造の表現":
+    import page4_context_structure_representation
+    page4_context_structure_representation.render_page(tokenizer, model)
+    st.stop()
+ 
 # テキストを読み込み、トークン化して埋め込みを保存
 def process_and_save_embeddings():
     text = ""
@@ -89,3 +95,7 @@ if page == "次元削減":
 elif page == "内部表現":
     import page2_internal_representations
     page2_internal_representations.render_page(text)
+
+elif page == "文字選択":
+    import page3_dimensionality_reduction_select_word
+    page3_dimensionality_reduction_select_word.render_page(text, tokens_text, embeddings)
