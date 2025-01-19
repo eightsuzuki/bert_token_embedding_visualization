@@ -67,6 +67,10 @@ def render_page(tokenizer, model):
     embeddings_reduced = embeddings_reduced[:len(labels)]
     df = pd.DataFrame(embeddings_reduced, columns=["Component 1", "Component 2"])
     df["Label"] = labels
+
+    # Define a color map
+    colors = {label: px.colors.qualitative.Plotly[i % len(px.colors.qualitative.Plotly)] for i, label in enumerate(set(labels))}
+
     # Create the directory based on the selected option
     if option == "Days of the Week":
         output_dir = "./image/context_structure/days"
@@ -76,16 +80,12 @@ def render_page(tokenizer, model):
     os.makedirs(output_dir, exist_ok=True)
 
     title = f"{reduction_method} Reduced Embeddings"
-    fig = px.scatter(df, x="Component 1", y="Component 2", color="Label", title=title)
+    fig = px.scatter(df, x="Component 1", y="Component 2", color="Label", color_discrete_map=colors, title=title)
     st.plotly_chart(fig)
 
     # Save the figure as an image
     output_path = os.path.join(output_dir, "embedding_plot.png")
     pio.write_image(fig, output_path)
-
-    if st.button("Save Plot as Image"):
-        pio.write_image(fig, output_path)
-        st.success(f"Plot saved as {output_path}")
 
     if st.button("Plot Intermediate Layers"):
         intermediate_layers = [i for i in range(0, model.config.num_hidden_layers)]
@@ -93,31 +93,39 @@ def render_page(tokenizer, model):
         images = []
         for layer_idx in intermediate_layers:
             # 中間層の埋め込みを取得
-            intermediate_embeddings = get_layer_embeddings(model, inputs, layer_idx)  # 適切な関数で中間層の埋め込みを取得
+            intermediate_embeddings = get_layer_embeddings(model, inputs, layer_idx)
 
             # 次元削減
             intermediate_embeddings_reduced = reducer.fit_transform(intermediate_embeddings)
             intermediate_embeddings_reduced = intermediate_embeddings_reduced[:len(labels)]
             df_intermediate = pd.DataFrame(intermediate_embeddings_reduced, columns=["Component 1", "Component 2"])
             df_intermediate["Label"] = labels
+            df_intermediate["Layer"] = layer_idx
 
-            # プロット
-            fig_intermediate = px.scatter(df_intermediate, x="Component 1", y="Component 2", color="Label", title=f"Layer {layer_idx} - {reduction_method} Reduced Embeddings")
-            fig_intermediate.update_xaxes(range=[-20, 22])  # 座標範囲を固定
-            fig_intermediate.update_yaxes(range=[-20, 22])  # 座標範囲を固定
-            st.plotly_chart(fig_intermediate)
+            images.append(df_intermediate)
 
-        # 最終層の埋め込みを取得
+        # 最終層の埋め込みを追加
+        final_layer_idx = model.config.num_hidden_layers
         final_embeddings = outputs.last_hidden_state.squeeze().numpy()
-
-        # 次元削減
         final_embeddings_reduced = reducer.fit_transform(final_embeddings)
         final_embeddings_reduced = final_embeddings_reduced[:len(labels)]
         df_final = pd.DataFrame(final_embeddings_reduced, columns=["Component 1", "Component 2"])
         df_final["Label"] = labels
+        df_final["Layer"] = final_layer_idx
 
-        # プロット
-        fig_final = px.scatter(df_final, x="Component 1", y="Component 2", color="Label", title=f"Final Layer - {reduction_method} Reduced Embeddings")
-        fig_final.update_xaxes(range=[-20, 22])  # 座標範囲を固定
-        fig_final.update_yaxes(range=[-20, 22])  # 座標範囲を固定
-        st.plotly_chart(fig_final)
+        images.append(df_final)
+
+        # Combine all layers into a single DataFrame
+        df_combined = pd.concat(images)
+
+        # Create an animated plot
+        fig_animated = px.scatter(df_combined, x="Component 1", y="Component 2", color="Label", animation_frame="Layer", 
+                                  color_discrete_map=colors, title=f"{reduction_method} Reduced Embeddings Across Layers")
+        x_min = st.number_input("X-axis min", value=-20)
+        x_max = st.number_input("X-axis max", value=22)
+        y_min = st.number_input("Y-axis min", value=-20)
+        y_max = st.number_input("Y-axis max", value=22)
+
+        fig_animated.update_xaxes(range=[x_min, x_max])  # 座標範囲を固定
+        fig_animated.update_yaxes(range=[y_min, y_max])  # 座標範囲を固定
+        st.plotly_chart(fig_animated)
