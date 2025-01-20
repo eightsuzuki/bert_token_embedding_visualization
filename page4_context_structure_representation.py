@@ -74,6 +74,7 @@ def render_page(tokenizer, model):
     # Create the directory based on the selected option
     if option == "Days of the Week":
         output_dir = "./image/context_structure/days"
+    # test
     else:
         output_dir = "./image/context_structure/months"
     
