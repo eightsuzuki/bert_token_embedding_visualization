@@ -73,7 +73,8 @@ def render_page(text, tokens_text, embeddings):
             # 取得したインデックスをdog_indicesに追加
             dog_indices.extend(indices)
             # 取得したインデックスの数だけカテゴリラベルをdog_labelsに追加
-            dog_labels.extend([f"Category {i+1}"] * len(indices))
+            category_names = ["Dog", "Dog Breeds", "Dog Roles", "Mammals", "Other Animals", "Punctuation"]
+            dog_labels.extend([category_names[i]] * len(indices))
             # 各カテゴリのトークン数をcategory_countsに記録
             category_counts[i] = len(indices)
 
@@ -163,15 +164,17 @@ def render_page(text, tokens_text, embeddings):
 
     labels = [labels[i] for i in random_indices]
     tokens = [tokens[i] for i in random_indices]
+
     colors = {
-        "Category 1": "darkred",
-        "Category 2": "red",
-        "Category 3": "orange",
-        "Category 4": "lightcoral",
-        "Category 5": "coral",
-        "Category 6": "purple",
-        "Unrelated": "blue"
+        "Dog": "darkblue",
+        "Dog Breeds": "blue",
+        "Dog Roles": "skyblue",
+        "Mammals": "red",
+        "Other Animals": "orange",
+        "Punctuation": "white",
+        "Unrelated": "gray"
     }
+    
     df = pd.DataFrame({
         "x": reduced_embeddings[:, 0],
         "y": reduced_embeddings[:, 1],
@@ -195,7 +198,7 @@ def render_page(text, tokens_text, embeddings):
     )
     fig.update_traces(marker=dict(opacity=0.3)) 
 
-    for category in ["Category 1", "Category 2", "Category 3", "Category 4", "Category 5", "Category 6"]:
+    for category in ["Dog", "Dog Breeds", "Dog Roles", "Mammals", "Other Animals", "Punctuation"]:
         category_df = df[df["Label"] == category]
         if not category_df.empty:
             fig.add_trace(px.scatter(

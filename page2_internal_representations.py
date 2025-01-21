@@ -127,119 +127,94 @@ def render_page(text):
         return embeddings_2d
 
     max_points = min(5000, len(embeddings))
-    if max_points > 100:
-        num_points = st.sidebar.slider("Number of points to plot", min_value=100, max_value=max_points, value=max_points, step=100)
-    else:
-        num_points = max_points
 
-    image_files = []
-    for layer_idx in range(model.config.num_hidden_layers + 1):
-        tsne_cache_dir = "./cache/internal/tsne"
-        tsne_cache_file = os.path.join(tsne_cache_dir, f"{text_hash}__layer_{layer_idx}_tsne_embeddings.json")
+    num_points = st.sidebar.slider("Number of points to plot", min_value=100, max_value=max_points, value=max_points, step=100)
+    if st.button("Plot Intermediate Layers"):
+        intermediate_layers = [i for i in range(0, model.config.num_hidden_layers + 1)]
+        st.write(f"Number of intermediate layers: {len(intermediate_layers)}")
+        images = []
+        for layer_idx in intermediate_layers:
+            tsne_cache_dir = "./cache/internal/tsne"
+            tsne_cache_file = os.path.join(tsne_cache_dir, f"{text_hash}__layer_{layer_idx}_tsne_embeddings.json")
 
-        if os.path.exists(tsne_cache_file):
-            with open(tsne_cache_file, "r", encoding="utf-8") as file:
-                tsne_data = json.load(file)
-                embeddings_2d = np.array(tsne_data["embeddings_2d"])
-        else:
-            layer_cache_file = os.path.join(cache_dir, f"{text_hash}_layer_{layer_idx}_embeddings.json")
-            embeddings_2d = reduce_dimensions_with_tsne(layer_cache_file, layer_idx)
-            
-        np.random.seed(42)
-        selected_indices = np.random.choice(len(embeddings_2d), num_points, replace=False)
+            if os.path.exists(tsne_cache_file):
+                with open(tsne_cache_file, "r", encoding="utf-8") as file:
+                    tsne_data = json.load(file)
+                    embeddings_2d = np.array(tsne_data["embeddings_2d"])
+            else:
+                layer_cache_file = os.path.join(cache_dir, f"{text_hash}_layer_{layer_idx}_embeddings.json")
+                embeddings_2d = reduce_dimensions_with_tsne(layer_cache_file, layer_idx)
 
-        selected_embeddings = embeddings_2d[selected_indices]
-        selected_tokens = [tokens_text[idx] for idx in selected_indices]
+            np.random.seed(42)
+            selected_indices = np.random.choice(len(embeddings_2d), num_points, replace=False)
 
-        dog_related_tokens = [
-            ["dog", "dogs", "inu", "puppy", "canine", "doggy", "puppies", "pup"],
-            ["chihuahua", "golden", "retriever", "shiba", "shepherd"],
-            ["guide", "therapy", "police", "working", "service"],
-            ["mammal", "mammals", "rodent", "primates", "marsupial", "carnivore", "herbivore", "bovine", "feline", "equine", "rodents", "marsupials", "bovines", "felines"],
-            ["reptile", "amphibian", "bird", "fish", "insect", "arachnid", "crustacean", "mollusk", "algae", "bacteria", "reptiles", "amphibians", "fishes", "crustaceans", "mollusks", "birds", "plants"],
-            [",", ".", "[SEP]"]
-        ]
+            selected_embeddings = embeddings_2d[selected_indices]
+            selected_tokens = [tokens_text[idx] for idx in selected_indices]
 
-        category_counts = [0] * len(dog_related_tokens)
-        dog_indices = []
-        dog_labels = []
-        for i, category in enumerate(dog_related_tokens):
-            indices = [j for j, token in enumerate(selected_tokens) if token.lower() in category]
-            dog_indices.extend(indices)
-            dog_labels.extend([f"Category {i+1}"] * len(indices))
-            category_counts[i] = len(indices)
+            dog_related_tokens = [
+                ["dog", "dogs", "inu", "puppy", "canine", "doggy", "puppies", "pup"],
+                ["chihuahua", "golden", "retriever", "shiba", "shepherd"],
+                ["guide", "therapy", "police", "working", "service"],
+                ["mammal", "mammals", "rodent", "primates", "marsupial", "carnivore", "herbivore", "bovine", "feline", "equine", "rodents", "marsupials", "bovines", "felines"],
+                ["reptile", "amphibian", "bird", "fish", "insect", "arachnid", "crustacean", "mollusk", "algae", "bacteria", "reptiles", "amphibians", "fishes", "crustaceans", "mollusks", "birds", "plants"],
+                [",", ".", "[SEP]"]
+            ]
 
-        unrelated_tokens = [
-            token.lower() for token in set(selected_tokens) 
-            if not any(word in token.lower() for category in dog_related_tokens for word in category)
-        ]
+            category_counts = [0] * len(dog_related_tokens)
+            dog_indices = []
+            dog_labels = []
+            for i, category in enumerate(dog_related_tokens):
+                indices = [j for j, token in enumerate(selected_tokens) if token.lower() in category]
+                dog_indices.extend(indices)
+                category_names = ["Dog", "Dog Breeds", "Dog Roles", "Mammals", "Other Animals", "Punctuation"]
+                dog_labels.extend([category_names[i]] * len(indices))
+                category_counts[i] = len(indices)
+                    
+            unrelated_tokens = [
+                token.lower() for token in set(selected_tokens) 
+                if not any(word in token.lower() for category in dog_related_tokens for word in category)
+            ]
 
-        unrelated_indices = [
-            i for i, token in enumerate(selected_tokens)
-            if token.lower() in unrelated_tokens and i not in dog_indices
-        ]
+            unrelated_indices = [
+                i for i, token in enumerate(selected_tokens)
+                if token.lower() in unrelated_tokens and i not in dog_indices
+            ]
 
-        final_selected_indices = dog_indices + unrelated_indices
-        final_selected_embeddings = [selected_embeddings[idx] for idx in final_selected_indices]
+            final_selected_indices = dog_indices + unrelated_indices
+            final_selected_embeddings = [selected_embeddings[idx] for idx in final_selected_indices]
 
-        labels = dog_labels + ["Unrelated"] * len(unrelated_indices)
-        tokens = [selected_tokens[idx] for idx in final_selected_indices]
+            labels = dog_labels + ["Unrelated"] * len(unrelated_indices)
+            tokens = [selected_tokens[idx] for idx in final_selected_indices]
+
+            df = pd.DataFrame({
+                "x": [embedding[0] for embedding in final_selected_embeddings],
+                "y": [embedding[1] for embedding in final_selected_embeddings],
+                "Label": labels,
+                "Token": tokens,
+                "Layer": layer_idx
+            })
+
+            images.append(df)
+
+        df_combined = pd.concat(images)
 
         colors = {
-            "Category 1": "darkred",
-            "Category 2": "red",
-            "Category 3": "orange",
-            "Category 4": "lightcoral",
-            "Category 5": "coral",
-            "Category 6": "purple",
-            "Unrelated": "blue"
+            "Dog": "darkblue",
+            "Dog Breeds": "blue",
+            "Dog Roles": "skyblue",
+            "Mammals": "red",
+            "Other Animals": "orange",
+            "Punctuation": "white",
+            "Unrelated": "gray"
         }
-
-        df = pd.DataFrame({
-            "x": [embedding[0] for embedding in final_selected_embeddings],
-            "y": [embedding[1] for embedding in final_selected_embeddings],
-            "Label": labels,
-            "Token": tokens
-        })
-
-        fig = px.scatter(
-            df[df["Label"] == "Unrelated"],
-            x="x",
-            y="y",
-            color="Label",
-            color_discrete_map=colors,
-            hover_data={"Token": True},
-            labels={"x": "Dimension 1", "y": "Dimension 2"},
-            title=f"t-SNE Visualization of Dog-Related and Unrelated Tokens for Layer {layer_idx}"
-        )
-        fig.update_traces(marker=dict(opacity=0.3))
-
-        for category in ["Category 1", "Category 2", "Category 3", "Category 4", "Category 5", "Category 6"]:
-            category_df = df[df["Label"] == category]
-            if not category_df.empty:
-                fig.add_trace(px.scatter(
-                    category_df,
-                    x="x",
-                    y="y",
-                    color="Label",
-                    color_discrete_map=colors,
-                    hover_data={"Token": True},
-                    labels={"x": "Dimension 1", "y": "Dimension 2"}
-                ).data[0])
-
-        fig.update_layout(xaxis_range=[-130, 130], yaxis_range=[-130, 130])
-        st.plotly_chart(fig)
-
-        # Save the plot as an image
-        image_path = f"./image/internal/tsne/layer_{layer_idx}.png"
-        fig.write_image(image_path)
-        image_files.append(image_path)
         
-        # st.sidebar.write(f"Layer {layer_idx}")
-        # for i, count in enumerate(category_counts):
-        #     st.sidebar.write(f"Category {i+1} Tokens: {count}")
+        fig_animated = px.scatter(df_combined, x="x", y="y", color="Label", animation_frame="Layer", 
+                        color_discrete_map=colors, title="t-SNE Reduced Embeddings Across Layers", opacity=0.5)
+        x_min = st.number_input("X-axis min", value=-150)
+        x_max = st.number_input("X-axis max", value=150)
+        y_min = st.number_input("Y-axis min", value=-150)
+        y_max = st.number_input("Y-axis max", value=150)
 
-    # Combine images into a GIF
-    gif_path = "./image/internal/tsne/tsne_visualization.gif"
-    images = [Image.open(image_file) for image_file in image_files]
-    st.write(f"GIF saved at {gif_path}")
+        fig_animated.update_xaxes(range=[x_min, x_max])
+        fig_animated.update_yaxes(range=[y_min, y_max])
+        st.plotly_chart(fig_animated)
