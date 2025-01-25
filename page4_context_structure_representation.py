@@ -21,18 +21,28 @@ def get_layer_embeddings(model, inputs, layer_idx):
         outputs = model(**inputs, output_hidden_states=True)
     return outputs.hidden_states[layer_idx].squeeze().numpy()
 
+# Function to center the embeddings
+def center_embeddings(embeddings):
+    return embeddings - np.mean(embeddings, axis=0)
+
+# Function to whiten the embeddings using PCA
+def whiten_embeddings(embeddings):
+    pca = PCA(whiten=True)
+    return pca.fit_transform(embeddings)
 
 # ページ 4: 文脈構造の表現
 def render_page(tokenizer, model):
     # 選択肢を追加
-    option = st.selectbox("Select option", ["Days of the Week", "Months"])
+    option = st.selectbox("Select option", ["Days of the Week", "Random Days of the Week", "Months"])
     
     if option == "Days of the Week":
         items = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    elif option == "Random Days of the Week":
+        items = ["Monday", "Thursday", "Sunday", "Tuesday", "Friday", "Saturday", "Wednesday"]
     else:
         items = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
     
-    if option == "Days of the Week":
+    if option == "Days of the Week" or option == "Random Days of the Week":
         num_repeats = st.number_input("Number of repetitions", min_value=1, max_value=100, value=70)
     else:
         num_repeats = st.number_input("Number of repetitions", min_value=1, max_value=100, value=40)
@@ -46,22 +56,31 @@ def render_page(tokenizer, model):
     
     embeddings = get_layer_embeddings(model, inputs, -1)
     st.write("Embeddings shape:", embeddings.shape)
+
+    # Center the embeddings
+    embeddings_centered = center_embeddings(embeddings)
+
     # 次元削減の方法を選択
     reduction_method = st.selectbox("Select dimensionality reduction method", ["UMAP", "ICA", "PCA", "t-SNE"])
     
     if reduction_method == "PCA":
         reducer = PCA(n_components=2)
+        embeddings_reduced = reducer.fit_transform(embeddings_centered)
         
     elif reduction_method == "ICA":
+        # Whiten the embeddings before applying ICA
+        # embeddings_whitened = whiten_embeddings(embeddings_centered)
         reducer = FastICA(n_components=2)
+        embeddings_reduced = reducer.fit_transform(embeddings_centered)
         
     elif reduction_method == "t-SNE":
         reducer = TSNE(n_components=2)
+        embeddings_reduced = reducer.fit_transform(embeddings_centered)
         
     elif reduction_method == "UMAP":
         reducer = umap.UMAP(n_components=2)
+        embeddings_reduced = reducer.fit_transform(embeddings_centered)
     
-    embeddings_reduced = reducer.fit_transform(embeddings)
     # アイテムごとに色をつける
     labels = (items * num_repeats)[:embeddings.shape[0]]
     embeddings_reduced = embeddings_reduced[:len(labels)]
@@ -73,8 +92,9 @@ def render_page(tokenizer, model):
 
     # Create the directory based on the selected option
     if option == "Days of the Week":
-        output_dir = "./image/context_structure/days"
-
+        output_dir = "./image/context_structure/days_of_the_week"
+    elif option == "Random Days of the Week":
+        output_dir = "./image/context_structure/random_days_of_the_week"
     else:
         output_dir = "./image/context_structure/months"
     
@@ -95,9 +115,14 @@ def render_page(tokenizer, model):
         for layer_idx in intermediate_layers:
             # 中間層の埋め込みを取得
             intermediate_embeddings = get_layer_embeddings(model, inputs, layer_idx)
+            intermediate_embeddings_centered = center_embeddings(intermediate_embeddings)
 
             # 次元削減
-            intermediate_embeddings_reduced = reducer.fit_transform(intermediate_embeddings)
+            if reduction_method == "ICA":
+                intermediate_embeddings_reduced = reducer.fit_transform(intermediate_embeddings_centered)
+            else:
+                intermediate_embeddings_reduced = reducer.fit_transform(intermediate_embeddings_centered)
+            
             intermediate_embeddings_reduced = intermediate_embeddings_reduced[:len(labels)]
             df_intermediate = pd.DataFrame(intermediate_embeddings_reduced, columns=["Component 1", "Component 2"])
             df_intermediate["Label"] = labels
@@ -108,7 +133,9 @@ def render_page(tokenizer, model):
         # 最終層の埋め込みを追加
         final_layer_idx = model.config.num_hidden_layers
         final_embeddings = get_layer_embeddings(model, inputs, -1)
-        final_embeddings_reduced = reducer.fit_transform(final_embeddings)
+        final_embeddings_centered = center_embeddings(final_embeddings)
+        final_embeddings_reduced = reducer.fit_transform(final_embeddings_centered)
+        
         final_embeddings_reduced = final_embeddings_reduced[:len(labels)]
         df_final = pd.DataFrame(final_embeddings_reduced, columns=["Component 1", "Component 2"])
         df_final["Label"] = labels

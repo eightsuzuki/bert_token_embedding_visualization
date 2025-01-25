@@ -214,5 +214,6 @@ def render_page(text, tokens_text, embeddings):
     st.plotly_chart(fig)
 
     # Display category counts in the sidebar
+    category_names = ["Dog", "Dog Breeds", "Dog Roles", "Mammals", "Other Animals", "Punctuation"]
     for i, count in enumerate(category_counts):
-        st.sidebar.write(f"Category {i+1} Tokens: {count}")
+        st.sidebar.write(f"{category_names[i]} Tokens: {count}")

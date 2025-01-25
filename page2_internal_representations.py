@@ -98,16 +98,30 @@ def render_page(text):
     st.write(f"トークン数: {len(tokens_text)}")
     
     def reduce_dimensions_with_tsne(layer_cache_file, layer_idx):
-        st.write("t-SNEで次元削減中...")
-        
+        st.write("次元削減中...")
+
         with open(layer_cache_file, "r", encoding="utf-8") as file:
             data = json.load(file)
             embeddings = np.array(data["layer_embeddings"])
             text = data["text"]
             tokens_text = data["tokens_text"]
-        
-        tsne = TSNE(n_components=2, random_state=42)
-        embeddings_2d = tsne.fit_transform(embeddings)
+
+        reduction_method = st.sidebar.selectbox("Select dimensionality reduction method", ["t-SNE", "PCA", "UMAP", "Isomap", "LLE", "FastICA"])
+
+        if reduction_method == "t-SNE":
+            reducer = TSNE(n_components=2, random_state=42)
+        elif reduction_method == "PCA":
+            reducer = PCA(n_components=2)
+        elif reduction_method == "UMAP":
+            reducer = umap.UMAP(n_components=2, random_state=42)
+        elif reduction_method == "Isomap":
+            reducer = Isomap(n_components=2)
+        elif reduction_method == "LLE":
+            reducer = LocallyLinearEmbedding(n_components=2)
+        elif reduction_method == "FastICA":
+            reducer = FastICA(n_components=2, random_state=42)
+
+        embeddings_2d = reducer.fit_transform(embeddings)
 
         tsne_cache_dir = "./cache/internal/tsne"
         os.makedirs(tsne_cache_dir, exist_ok=True)
@@ -160,32 +174,53 @@ def render_page(text):
                 [",", ".", "[SEP]"]
             ]
 
+            # 各カテゴリのトークン数をカウントするリストを初期化
             category_counts = [0] * len(dog_related_tokens)
+            # 犬関連のトークンのインデックスとラベルを格納するリストを初期化
             dog_indices = []
             dog_labels = []
+            # 犬関連の各カテゴリを反復処理
             for i, category in enumerate(dog_related_tokens):
+                # 現在のカテゴリに属するトークンのインデックスを見つける
                 indices = [j for j, token in enumerate(selected_tokens) if token.lower() in category]
+                # 見つけたインデックスをdog_indicesリストに追加
                 dog_indices.extend(indices)
+                # ラベル付けのためのカテゴリ名を定義
                 category_names = ["Dog", "Dog Breeds", "Dog Roles", "Mammals", "Other Animals", "Punctuation"]
+                # dog_labelsリストに対応するカテゴリ名を追加
                 dog_labels.extend([category_names[i]] * len(indices))
+                # 現在のカテゴリのトークン数を更新
                 category_counts[i] = len(indices)
+
+                # 各カテゴリのトークン数が50未満の場合、ランダムに追加
+                if category_counts[i] < 50:
+                    additional_indices = [j for j in range(len(selected_tokens)) if selected_tokens[j].lower() in category and j not in dog_indices]
+                    if additional_indices:
+                        additional_indices = np.random.choice(additional_indices, min(50 - category_counts[i], len(additional_indices)), replace=False).tolist()
+                    dog_indices.extend(additional_indices)
+                    dog_labels.extend([category_names[i]] * len(additional_indices))
                     
+            # リストに含まれないトークンを収集
             unrelated_tokens = [
                 token.lower() for token in set(selected_tokens) 
                 if not any(word in token.lower() for category in dog_related_tokens for word in category)
             ]
 
+            # unrelated_tokensに含まれるトークンのインデックスを収集
             unrelated_indices = [
                 i for i, token in enumerate(selected_tokens)
                 if token.lower() in unrelated_tokens and i not in dog_indices
             ]
 
+            # 最終的に選択されたインデックスを結合
             final_selected_indices = dog_indices + unrelated_indices
             final_selected_embeddings = [selected_embeddings[idx] for idx in final_selected_indices]
 
+            # ラベルを結合
             labels = dog_labels + ["Unrelated"] * len(unrelated_indices)
             tokens = [selected_tokens[idx] for idx in final_selected_indices]
 
+            # データフレームを作成
             df = pd.DataFrame({
                 "x": [embedding[0] for embedding in final_selected_embeddings],
                 "y": [embedding[1] for embedding in final_selected_embeddings],
@@ -194,10 +229,13 @@ def render_page(text):
                 "Layer": layer_idx
             })
 
+            # 各レイヤーのデータフレームをリストに追加
             images.append(df)
 
+        # 全てのレイヤーのデータフレームを結合
         df_combined = pd.concat(images)
 
+        # カラー設定
         colors = {
             "Dog": "darkblue",
             "Dog Breeds": "blue",
@@ -208,13 +246,19 @@ def render_page(text):
             "Unrelated": "gray"
         }
         
+        # アニメーション付き散布図を作成
         fig_animated = px.scatter(df_combined, x="x", y="y", color="Label", animation_frame="Layer", 
                         color_discrete_map=colors, title="t-SNE Reduced Embeddings Across Layers", opacity=0.5)
+        
+        # X軸とY軸の範囲を設定
         x_min = st.number_input("X-axis min", value=-150)
         x_max = st.number_input("X-axis max", value=150)
         y_min = st.number_input("Y-axis min", value=-150)
         y_max = st.number_input("Y-axis max", value=150)
 
+        # X軸とY軸の範囲を更新
         fig_animated.update_xaxes(range=[x_min, x_max])
         fig_animated.update_yaxes(range=[y_min, y_max])
+        
+        # プロットを表示
         st.plotly_chart(fig_animated)

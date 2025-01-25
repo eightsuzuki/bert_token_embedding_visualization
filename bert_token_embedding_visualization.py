@@ -13,7 +13,7 @@ st.title("トークン埋め込みの分析と可視化")
 # ページ管理
 page = st.sidebar.selectbox(
     "ページを選択してください",
-    ["文脈構造の表現", "次元削減", "内部表現", "文字選択"]
+    ["attention map", "qkv mapping", "文脈構造の表現", "次元削減", "内部表現", "文字選択"]
 )
 
 # モデルとトークナイザーのロード
@@ -22,9 +22,18 @@ def load_model_and_tokenizer():
     model = BertModel.from_pretrained("bert-base-uncased", output_hidden_states=True)
     return tokenizer, model
 
+if page == "attention map":
+    import page5_attention_map
+    page5_attention_map.render_page()
+    st.stop()
+
+if page == "qkv mapping":
+    import page6_qkv_mapping
+    page6_qkv_mapping.render_page()
+    st.stop()
+    
 tokenizer, model = load_model_and_tokenizer()
 
-# ここに分岐を作ってpageが 文脈構造の表現 なら新しいページ4での処理を行うようにしてほしい
 if page == "文脈構造の表現":
     import page4_context_structure_representation
     page4_context_structure_representation.render_page(tokenizer, model)
