@@ -199,7 +199,12 @@ def extract_plot_data(
     戻り値:
     --------
     data_dict: dict
-        {(layer_idx, head_idx): {"reduced": 2次元座標 (seq_len, 2), "cls_attn": (seq_len,)}}
+        {
+          (layer_idx, head_idx): {
+             "reduced": 2次元座標 (seq_len, 2),
+             "attn_scores": (seq_len, seq_len)  # 追加: 全トークン同士のアテンション行列
+          }
+        }
     x_min_per_head, x_max_per_head, y_min_per_head, y_max_per_head: dict
         各ヘッドごとにレイヤーをまたいだときの x,y の最小・最大値
     tokens: List[str]
@@ -210,6 +215,7 @@ def extract_plot_data(
     # ------------------------------------------------------------
     # ここで単一テキストのハッシュを作り、ファイル名に反映させる
     # ------------------------------------------------------------
+    import hashlib
     text_hash = hashlib.md5(text.encode("utf-8")).hexdigest()[:8]
     cache_file = f"extracted_data_{text_hash}.pkl"
     cache_path = os.path.join(cache_dir, cache_file)
@@ -229,7 +235,7 @@ def extract_plot_data(
     # -----------------------------------------------------------
     # 1st pass: 各レイヤー・各ヘッドの次元削減結果をまずまとめて計算し、メモリに保持
     # -----------------------------------------------------------
-    # {(layer_idx, head_idx): {"reduced": 2次元座標, "cls_attn": (seq_len,)}}
+    # {(layer_idx, head_idx): {"reduced": 2次元座標, "attn_scores": (seq_len, seq_len)}}
     data_dict = {}
 
     # ヘッドごとの x, y 座標を格納するためのリスト (レイヤーをまたいで集計)
@@ -251,15 +257,13 @@ def extract_plot_data(
             attn_scores = (head_q @ head_k.transpose(-2, -1)) * (1.0 / np.sqrt(head_q.size(-1)))
             attn_scores = torch.nn.functional.softmax(attn_scores, dim=-1).detach().cpu().numpy()
 
-            # CLS トークンのスコアを取得 (shape: (seq_len,))
-            cls_attn = attn_scores[0, :]
-
             # UMAP/PCA で 2 次元へ射影
             reduced = reducers_per_head[head_idx].transform(head_v)
 
             data_dict[(layer_idx, head_idx)] = {
                 "reduced": reduced,
-                "cls_attn": cls_attn,
+                # 全トークン同士のアテンション行列を保存
+                "attn_scores": attn_scores,
             }
 
             # 軸固定のため、ヘッドごとに x, y の値を全部集める
@@ -313,6 +317,7 @@ def plot_all_layers_with_shared_head_reducers(
     output_dir: str = None,
     output_filename: str = None,
     show_plot=True,
+    selected_token_idx=0  # 追加: 注目したいトークンのインデックス
 ):
     """
     全レイヤーの v を 2 次元マッピングし、ヘッドごとに統一されたリダクションモデルを適用して可視化。
@@ -325,18 +330,28 @@ def plot_all_layers_with_shared_head_reducers(
 
     for layer_idx in range(num_layers):
         for head_idx in range(num_heads):
+            # 2次元座標
             reduced = data_dict[(layer_idx, head_idx)]["reduced"]
-            cls_attn = data_dict[(layer_idx, head_idx)]["cls_attn"]
+            # 全アテンション行列
+            attn_scores = data_dict[(layer_idx, head_idx)]["attn_scores"]
 
-            # Attention スコアに基づくサイズ設定
-            sizes = cls_attn[1:] * 1500  # CLS トークン以外
-            cls_tkn_size = cls_attn[0] * 2000  # CLS トークン
+            # 選択されたトークンが他のトークンに払うアテンションベクトル (shape: (seq_len,))
+            selected_attn = attn_scores[selected_token_idx, :]
+
+            # サイズ設定
+            sizes = selected_attn * 1500
+
+            # カラー設定：選択トークンだけ赤、他は青
+            colors = ["blue"] * seq_len
+            colors[selected_token_idx] = "red"
 
             ax = axes[layer_idx, head_idx]
-            ax.scatter(reduced[1:, 0], reduced[1:, 1], s=sizes, alpha=0.5, c="blue")
             ax.scatter(
-                reduced[0, 0], reduced[0, 1],
-                s=cls_tkn_size, c="red", alpha=0.8, label="CLS"
+                reduced[:, 0],
+                reduced[:, 1],
+                s=sizes,
+                alpha=0.5,
+                c=colors
             )
             ax.set_title(f"Layer {layer_idx}, Head {head_idx}")
 
@@ -386,26 +401,33 @@ def plot_individual_layer_and_head(
     tokens,
     seq_len,
     selected_layer,
-    selected_head
+    selected_head,
+    selected_token_idx=0  # 追加: 注目したいトークンのインデックス
 ):
     """
-    選択されたレイヤーとヘッドの次元削減結果を表示し、CLSトークンのアテンションに応じて点のサイズを変化させる。
+    選択されたレイヤーとヘッドの次元削減結果を表示し、
+    任意のトークン (selected_token_idx) が他のトークンに払うアテンションに応じて点のサイズを変化させる。
+    さらに、その選択トークンを赤色で強調表示する。
     """
 
     fig_selected, ax_selected = plt.subplots()
     reduced_selected = data_dict[(selected_layer, selected_head)]["reduced"]
-    cls_attn_selected = data_dict[(selected_layer, selected_head)]["cls_attn"]
+    attn_matrix = data_dict[(selected_layer, selected_head)]["attn_scores"]
 
-    sizes_selected = cls_attn_selected[1:] * 1500
-    cls_tkn_size_selected = cls_attn_selected[0] * 2000
+    # 選択トークンが他のトークンに払うアテンションベクトル
+    selected_attn = attn_matrix[selected_token_idx, :]
+    sizes = selected_attn * 1500
+
+    # カラー設定：選択トークンだけ赤、他は青
+    colors = ["blue"] * seq_len
+    colors[selected_token_idx] = "red"
 
     ax_selected.scatter(
-        reduced_selected[1:, 0], reduced_selected[1:, 1],
-        s=sizes_selected, alpha=0.5, c="blue"
-    )
-    ax_selected.scatter(
-        reduced_selected[0, 0], reduced_selected[0, 1],
-        s=cls_tkn_size_selected, c="red", alpha=0.8, label="CLS"
+        reduced_selected[:, 0],
+        reduced_selected[:, 1],
+        s=sizes,
+        alpha=0.5,
+        c=colors
     )
     ax_selected.set_title(f"Layer {selected_layer}, Head {selected_head}")
 
@@ -496,6 +518,7 @@ def render_page():
 
     ### CLSトークンのアテンションスコアの取得
     - `attn_scores[0, :]` は、CLSトークンが他のすべてのトークンに対してどれだけ注意を払っているかを示します。
+      （※本コードでは選択トークンを変えることで、CLS 以外も可視化できるように拡張しています。）
 
     ### 具体的な流れ
     1. **クエリ、キー、バリューの計算**:
@@ -507,15 +530,16 @@ def render_page():
 
     3. **CLSトークンのアテンションスコアの取得**:
        - CLSトークンが他のすべてのトークンに対してどれだけ注意を払っているかを示すスコアを取得します。
+         （本コードでは、CLS に限らず任意のトークンを選択可能です。）
 
     4. **次元削減の適用**:
        - バリュー（V_n）テンソルに対して次元削減（UMAPまたはPCA）を適用し、2次元座標を取得します。
 
     5. **データの保存**:
-       - 次元削減された2次元座標と、CLSトークンのアテンションスコアを辞書に保存します。
+       - 次元削減された2次元座標と、各トークン間のアテンション行列を辞書に保存します。
 
     ### まとめ
-    このコードは、各レイヤーおよび各ヘッドにおけるCLSトークンのアテンションスコアを計算し、それを次元削減されたバリュー（V_n）テンソルの2次元座標とともに保存しています。これにより、CLSトークンが他のトークンに対してどれだけ注意を払っているかを視覚的に解析することができます。
+    このコードは、各レイヤーおよび各ヘッドにおける任意のトークンのアテンションスコアを計算し、それを次元削減されたバリュー（V_n）テンソルの2次元座標とともに保存しています。これにより、特定のトークンが他のトークンに対してどれだけ注意を払っているかを視覚的に解析することができます。
     """)
 
     ###############################################################################
@@ -572,6 +596,12 @@ def render_page():
         cache_dir="./cache/qkv/"  # ※単一テキストに応じた名前を付けたファイルをここに保存
     )
 
+    # トークン一覧を表示用に作成（重複トークンがあるときは要注意）
+    token_options = [f"{i}: {tok}" for i, tok in enumerate(tokens)]
+    selected_token_str = st.selectbox("Select a Token to visualize its attention", token_options)
+    # "0: [CLS]" のような文字列からインデックスを取り出す
+    selected_token_idx = int(selected_token_str.split(":")[0])
+
     if st.button("Plot All Layers and Heads"):
         fig_all = plot_all_layers_with_shared_head_reducers(
             data_dict=data_dict,
@@ -586,6 +616,7 @@ def render_page():
             output_dir="image/qkv_outputs",
             output_filename="all_layers_heads_values.png",
             show_plot=False,
+            selected_token_idx=selected_token_idx  # 追加
         )
         st.pyplot(fig_all)
 
@@ -602,7 +633,8 @@ def render_page():
             tokens=tokens,
             seq_len=seq_len,
             selected_layer=selected_layer,
-            selected_head=selected_head
+            selected_head=selected_head,
+            selected_token_idx=selected_token_idx  # 追加
         )
         st.pyplot(fig_selected)
 
