@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 import streamlit as st
 import joblib
 import hashlib  # 追加
+import io
+import matplotlib.animation as animation
 
 from typing import Dict, List
 from transformers import BertModel, BertConfig, BertTokenizer
@@ -120,10 +122,10 @@ def fit_umap_or_pca_per_head(
     """
     全レイヤーの v を集めて、ヘッドごとに UMAP or PCA へフィットする。
     レイヤー情報は無視し、ヘッドごとに統一された次元削減モデルを作成。
+
+    ★ここを変更して、最後のレイヤーのみからデータを集める★
     """
-    # ------------------------------------------------------------
-    # ここで入力テキストのハッシュを作り、ファイル名に反映させる
-    # ------------------------------------------------------------
+    import hashlib
     joined_text = " ".join(texts)
     text_hash = hashlib.md5(joined_text.encode("utf-8")).hexdigest()[:8]
 
@@ -134,12 +136,13 @@ def fit_umap_or_pca_per_head(
 
     cache_path = os.path.join(cache_dir, cache_file)
 
-    # すでにキャッシュファイルがあればロードして返す
     if os.path.isfile(cache_path):
         print(f"=== Loading reducers from local cache: {cache_path} ===")
         return joblib.load(cache_path)
 
-    # ヘッドごとの累積データ
+    # 最後のレイヤー (num_layers - 1) の v だけ集める
+    last_layer_idx = num_layers - 1
+
     head_accumulated_data = [[] for _ in range(num_heads)]
 
     for text in texts:
@@ -148,30 +151,28 @@ def fit_umap_or_pca_per_head(
         with torch.no_grad():
             model(**inputs)
 
-        # 各レイヤーからのデータを累積
-        for layer_idx in range(num_layers):
-            q, k, v = model.get_qkv_from_layer(layer_idx)
-            v_split = split_heads(v, num_heads=num_heads)[0]  # batch_size=1 前提
+        # "最後のレイヤー" だけから v を取得
+        q, k, v = model.get_qkv_from_layer(last_layer_idx)
+        v_split = split_heads(v, num_heads=num_heads)[0]  # batch_size=1
 
-            for head_idx in range(num_heads):
-                head_v = v_split[head_idx]  # shape: (seq_len, head_dim)
-                head_accumulated_data[head_idx].append(head_v.detach().cpu().numpy())
+        for head_idx in range(num_heads):
+            head_v = v_split[head_idx]
+            head_accumulated_data[head_idx].append(head_v.detach().cpu().numpy())
 
-    # 各ヘッドごとに concat -> UMAP or PCA fit
     reducers = []
     for head_idx in range(num_heads):
-        data_head = np.concatenate(head_accumulated_data[head_idx], axis=0)  # (全トークン数, head_dim)
+        data_head = np.concatenate(head_accumulated_data[head_idx], axis=0)
         if use_umap:
             reducer = umap.UMAP(n_components=2, random_state=42, n_jobs=1)
         else:
             reducer = PCA(n_components=2)
 
+        # ここで "最後のレイヤー" のみを使って fit
         reducer.fit(data_head)
         reducers.append(reducer)
 
-    print("=== Done fitting UMAP/PCA per head ===")
+    print("=== Done fitting UMAP/PCA per head (using last-layer data only) ===")
 
-    # 計算結果をキャッシュとして保存
     os.makedirs(cache_dir, exist_ok=True)
     joblib.dump(reducers, cache_path)
     print(f"=== Saved reducers to local cache: {cache_path} ===")
@@ -202,7 +203,7 @@ def extract_plot_data(
         {
           (layer_idx, head_idx): {
              "reduced": 2次元座標 (seq_len, 2),
-             "attn_scores": (seq_len, seq_len)  # 追加: 全トークン同士のアテンション行列
+             "attn_scores": (seq_len, seq_len)
           }
         }
     x_min_per_head, x_max_per_head, y_min_per_head, y_max_per_head: dict
@@ -212,15 +213,11 @@ def extract_plot_data(
     seq_len: int
         トークン列の長さ
     """
-    # ------------------------------------------------------------
-    # ここで単一テキストのハッシュを作り、ファイル名に反映させる
-    # ------------------------------------------------------------
     import hashlib
     text_hash = hashlib.md5(text.encode("utf-8")).hexdigest()[:8]
     cache_file = f"extracted_data_{text_hash}.pkl"
     cache_path = os.path.join(cache_dir, cache_file)
 
-    # すでにキャッシュファイルがあればロードして返す
     if os.path.isfile(cache_path):
         print(f"=== Loading extracted data from local cache: {cache_path} ===")
         return joblib.load(cache_path)
@@ -232,19 +229,13 @@ def extract_plot_data(
     tokens = tokenizer.convert_ids_to_tokens(inputs["input_ids"][0])
     seq_len = len(tokens)
 
-    # -----------------------------------------------------------
-    # 1st pass: 各レイヤー・各ヘッドの次元削減結果をまずまとめて計算し、メモリに保持
-    # -----------------------------------------------------------
-    # {(layer_idx, head_idx): {"reduced": 2次元座標, "attn_scores": (seq_len, seq_len)}}
     data_dict = {}
-
-    # ヘッドごとの x, y 座標を格納するためのリスト (レイヤーをまたいで集計)
     x_vals_per_head = [[] for _ in range(num_heads)]
     y_vals_per_head = [[] for _ in range(num_heads)]
 
     for layer_idx in range(num_layers):
         q, k, v = model.get_qkv_from_layer(layer_idx)
-        q_split = split_heads(q, num_heads=num_heads)[0]  # (num_heads, seq_len, head_dim)
+        q_split = split_heads(q, num_heads=num_heads)[0]
         k_split = split_heads(k, num_heads=num_heads)[0]
         v_split = split_heads(v, num_heads=num_heads)[0]
 
@@ -253,24 +244,20 @@ def extract_plot_data(
             head_k = k_split[head_idx]
             head_v = v_split[head_idx].detach().cpu().numpy()
 
-            # Attention スコアを計算 (shape: (seq_len, seq_len))
             attn_scores = (head_q @ head_k.transpose(-2, -1)) * (1.0 / np.sqrt(head_q.size(-1)))
             attn_scores = torch.nn.functional.softmax(attn_scores, dim=-1).detach().cpu().numpy()
 
-            # UMAP/PCA で 2 次元へ射影
+            # ← ここでは "fit_umap_or_pca_per_head" が最後のレイヤーだけで学習した reducer を使う
             reduced = reducers_per_head[head_idx].transform(head_v)
 
             data_dict[(layer_idx, head_idx)] = {
                 "reduced": reduced,
-                # 全トークン同士のアテンション行列を保存
                 "attn_scores": attn_scores,
             }
 
-            # 軸固定のため、ヘッドごとに x, y の値を全部集める
             x_vals_per_head[head_idx].append(reduced[:, 0])
             y_vals_per_head[head_idx].append(reduced[:, 1])
 
-    # 2nd pass: ヘッドごとに x, y の最小値 / 最大値を求める
     x_min_per_head = {}
     x_max_per_head = {}
     y_min_per_head = {}
@@ -284,7 +271,6 @@ def extract_plot_data(
         y_min_per_head[head_idx] = all_y.min()
         y_max_per_head[head_idx] = all_y.max()
 
-    # 結果をまとめてキャッシュに保存
     data_to_save = (
         data_dict,
         x_min_per_head,
@@ -317,7 +303,7 @@ def plot_all_layers_with_shared_head_reducers(
     output_dir: str = None,
     output_filename: str = None,
     show_plot=True,
-    selected_token_idx=0  # 追加: 注目したいトークンのインデックス
+    selected_token_idx=0
 ):
     """
     全レイヤーの v を 2 次元マッピングし、ヘッドごとに統一されたリダクションモデルを適用して可視化。
@@ -330,18 +316,11 @@ def plot_all_layers_with_shared_head_reducers(
 
     for layer_idx in range(num_layers):
         for head_idx in range(num_heads):
-            # 2次元座標
             reduced = data_dict[(layer_idx, head_idx)]["reduced"]
-            # 全アテンション行列
             attn_scores = data_dict[(layer_idx, head_idx)]["attn_scores"]
-
-            # 選択されたトークンが他のトークンに払うアテンションベクトル (shape: (seq_len,))
             selected_attn = attn_scores[selected_token_idx, :]
 
-            # サイズ設定
             sizes = selected_attn * 1500
-
-            # カラー設定：選択トークンだけ赤、他は青
             colors = ["blue"] * seq_len
             colors[selected_token_idx] = "red"
 
@@ -355,14 +334,12 @@ def plot_all_layers_with_shared_head_reducers(
             )
             ax.set_title(f"Layer {layer_idx}, Head {head_idx}")
 
-            # 各ヘッドについて、全レイヤーで共有の x/y 軸範囲を固定
             ax.set_xlim([x_min_per_head[head_idx], x_max_per_head[head_idx]])
             ax.set_ylim([y_min_per_head[head_idx], y_max_per_head[head_idx]])
 
             ax.set_xlabel("Component 1")
             ax.set_ylabel("Component 2")
 
-            # トークンを点の近くに表示
             for i in range(seq_len):
                 ax.text(
                     reduced[i, 0],
@@ -376,7 +353,6 @@ def plot_all_layers_with_shared_head_reducers(
 
     plt.tight_layout()
 
-    # 保存処理
     if output_dir is not None and output_filename is not None:
         os.makedirs(output_dir, exist_ok=True)
         save_path = os.path.join(output_dir, output_filename)
@@ -402,7 +378,7 @@ def plot_individual_layer_and_head(
     seq_len,
     selected_layer,
     selected_head,
-    selected_token_idx=0  # 追加: 注目したいトークンのインデックス
+    selected_token_idx=0
 ):
     """
     選択されたレイヤーとヘッドの次元削減結果を表示し、
@@ -414,11 +390,9 @@ def plot_individual_layer_and_head(
     reduced_selected = data_dict[(selected_layer, selected_head)]["reduced"]
     attn_matrix = data_dict[(selected_layer, selected_head)]["attn_scores"]
 
-    # 選択トークンが他のトークンに払うアテンションベクトル
     selected_attn = attn_matrix[selected_token_idx, :]
     sizes = selected_attn * 1500
 
-    # カラー設定：選択トークンだけ赤、他は青
     colors = ["blue"] * seq_len
     colors[selected_token_idx] = "red"
 
@@ -437,7 +411,6 @@ def plot_individual_layer_and_head(
     ax_selected.set_xlabel("Component 1")
     ax_selected.set_ylabel("Component 2")
 
-    # トークンラベルを表示
     for i in range(seq_len):
         ax_selected.text(
             reduced_selected[i, 0],
@@ -450,6 +423,81 @@ def plot_individual_layer_and_head(
         )
 
     return fig_selected
+
+
+###############################################################################
+# 9. 新規追加: 選択したヘッドを固定して、Plotly でレイヤーをアニメーション表示
+###############################################################################
+def animate_selected_head_across_layers_plotly(
+    data_dict,
+    x_min_per_head,
+    x_max_per_head,
+    y_min_per_head,
+    y_max_per_head,
+    tokens,
+    seq_len,
+    selected_head,
+    selected_token_idx=0,
+    num_layers: int = 12,
+    min_size: int = 10  # 追加: サイズの最低値
+):
+    """
+    選択したヘッドを固定し、レイヤー 0~(num_layers-1) の変化を
+    Plotly Express のアニメーション付き散布図で可視化する関数。
+    """
+
+    import pandas as pd
+    import plotly.express as px
+
+    rows = []
+    for layer_idx in range(num_layers):
+        reduced = data_dict[(layer_idx, selected_head)]["reduced"]
+        attn_matrix = data_dict[(layer_idx, selected_head)]["attn_scores"]
+        selected_attn = attn_matrix[selected_token_idx, :]
+
+        sizes = selected_attn * 100
+        sizes = np.maximum(sizes, min_size)  # サイズの最低値を適用
+        for i in range(seq_len):
+            color_label = "Selected" if i == selected_token_idx else "Other"
+            rows.append({
+                "x": reduced[i, 0],
+                "y": reduced[i, 1],
+                "Layer": layer_idx,
+                "Token": tokens[i],
+                "Label": color_label,
+                "Size": sizes[i] * 2  # サイズを調整
+            })
+
+    df_combined = pd.DataFrame(rows)
+
+    color_map = {
+        "Selected": "red",
+        "Other": "blue"
+    }
+
+    # Calculate global min and max for x and y across all heads
+    global_x_min = min(x_min_per_head.values())
+    global_x_max = max(x_max_per_head.values())
+    global_y_min = min(y_min_per_head.values())
+    global_y_max = max(y_max_per_head.values())
+
+    fig_animated = px.scatter(
+        df_combined,
+        x="x",
+        y="y",
+        color="Label",
+        animation_frame="Layer",
+        hover_name="Token",
+        size="Size",
+        range_x=[global_x_min, global_x_max],
+        range_y=[global_y_min, global_y_max],
+        color_discrete_map=color_map,
+        title=f"Plotly Animated (Head {selected_head}), Token={tokens[selected_token_idx]}",
+        opacity=0.5
+    )
+
+    return fig_animated
+
 
 
 ###############################################################################
@@ -509,16 +557,15 @@ def render_page():
     ## 可視化の詳細
     - 各トークンの位置は次元削減されたバリュー (v) に基づいて決定されます。
     - 各トークンのサイズはアテンションスコアに基づいて調整されます。
-    - CLSトークンは赤色で強調表示されます。
+    - 任意のトークンを選択して、そのトークンが他のトークンに対してどれだけ注意を払っているかを可視化します。
 
     ## 詳細な説明
     ### アテンションスコアの計算
     1. クエリ（Q_n）とキー（K_n）の内積を計算し、スケーリングします。
     2. ソフトマックス関数を適用して、スコアを確率に変換します。
 
-    ### CLSトークンのアテンションスコアの取得
-    - `attn_scores[0, :]` は、CLSトークンが他のすべてのトークンに対してどれだけ注意を払っているかを示します。
-      （※本コードでは選択トークンを変えることで、CLS 以外も可視化できるように拡張しています。）
+    ### 任意のトークンのアテンションスコアの取得
+    - 選択したトークンが他のすべてのトークンに対してどれだけ注意を払っているかを示すスコアを取得します。
 
     ### 具体的な流れ
     1. **クエリ、キー、バリューの計算**:
@@ -528,9 +575,8 @@ def render_page():
        - クエリ（Q_n）とキー（K_n）の内積を計算し、スケーリングしてソフトマックス関数を適用します。
        - これにより、各トークンが他のトークンに対してどれだけ注意を払っているかを示すアテンションスコアが得られます。
 
-    3. **CLSトークンのアテンションスコアの取得**:
-       - CLSトークンが他のすべてのトークンに対してどれだけ注意を払っているかを示すスコアを取得します。
-         （本コードでは、CLS に限らず任意のトークンを選択可能です。）
+    3. **任意のトークンのアテンションスコアの取得**:
+       - 選択したトークンが他のすべてのトークンに対してどれだけ注意を払っているかを示すスコアを取得します。
 
     4. **次元削減の適用**:
        - バリュー（V_n）テンソルに対して次元削減（UMAPまたはPCA）を適用し、2次元座標を取得します。
@@ -558,7 +604,7 @@ def render_page():
     num_heads = 12
     use_umap = True
 
-    # （こちらも重い処理ならば disk キャッシュで高速化が可能です）
+    # ★最後のレイヤーだけで学習し、それを全レイヤーに適用する★
     reducers_per_head = fit_umap_or_pca_per_head(
         texts=texts_for_fitting,
         tokenizer=tokenizer,
@@ -566,12 +612,9 @@ def render_page():
         num_layers=num_layers,
         num_heads=num_heads,
         use_umap=use_umap,
-        cache_dir="./cache/qkv/"  # ※入力文章に応じた名前を付けたファイルをここに保存
+        cache_dir="./cache/qkv/"
     )
 
-    ###############################################################################
-    # 可視化と保存
-    ###############################################################################
     text_to_plot = (
         "She was a teacher for forty years and her writing has appeared in journals and "
         "anthologies since the early 1980s."
@@ -593,15 +636,10 @@ def render_page():
         num_layers=num_layers,
         num_heads=num_heads,
         max_length=16,
-        cache_dir="./cache/qkv/"  # ※単一テキストに応じた名前を付けたファイルをここに保存
+        cache_dir="./cache/qkv/"
     )
-
-    # トークン一覧を表示用に作成（重複トークンがあるときは要注意）
-    token_options = [f"{i}: {tok}" for i, tok in enumerate(tokens)]
-    selected_token_str = st.selectbox("Select a Token to visualize its attention", token_options)
-    # "0: [CLS]" のような文字列からインデックスを取り出す
-    selected_token_idx = int(selected_token_str.split(":")[0])
-
+    
+    
     if st.button("Plot All Layers and Heads"):
         fig_all = plot_all_layers_with_shared_head_reducers(
             data_dict=data_dict,
@@ -616,13 +654,16 @@ def render_page():
             output_dir="image/qkv_outputs",
             output_filename="all_layers_heads_values.png",
             show_plot=False,
-            selected_token_idx=selected_token_idx  # 追加
+            selected_token_idx=selected_token_idx
         )
         st.pyplot(fig_all)
 
+    token_options = [f"{i}: {tok}" for i, tok in enumerate(tokens)]
+    selected_token_str = st.selectbox("Select a Token to visualize its attention", token_options)
+    selected_token_idx = int(selected_token_str.split(":")[0])
     selected_layer = st.selectbox("Select Layer", list(range(num_layers)))
     selected_head = st.selectbox("Select Head", list(range(num_heads)))
-    
+
     if st.button("Plot Selected Layer and Head"):
         fig_selected = plot_individual_layer_and_head(
             data_dict=data_dict,
@@ -634,11 +675,27 @@ def render_page():
             seq_len=seq_len,
             selected_layer=selected_layer,
             selected_head=selected_head,
-            selected_token_idx=selected_token_idx  # 追加
+            selected_token_idx=selected_token_idx
         )
         st.pyplot(fig_selected)
 
+    # 新規追加: Plotly でアニメーション
+    if st.button("Animate with Plotly"):
+        import plotly.express as px
+        fig_plotly = animate_selected_head_across_layers_plotly(
+            data_dict=data_dict,
+            x_min_per_head=x_min_per_head,
+            x_max_per_head=x_max_per_head,
+            y_min_per_head=y_min_per_head,
+            y_max_per_head=y_max_per_head,
+            tokens=tokens,
+            seq_len=seq_len,
+            selected_head=selected_head,
+            selected_token_idx=selected_token_idx,
+            num_layers=num_layers
+        )
+        st.plotly_chart(fig_plotly)
 
-# スクリプト実行時のエントリーポイント
+
 if __name__ == "__main__":
     render_page()
