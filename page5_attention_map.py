@@ -5,6 +5,28 @@ import seaborn as sns
 from transformers import AutoTokenizer, AutoModel
 
 def render_page():
+    # 説明文を表示
+    st.markdown("""
+    ## BERTのAttention可視化
+
+    このアプリケーションは、BERTモデルのAttention重みを計算し、可視化します。
+    BERTのAttentionメカニズムは以下の式で表されます：
+
+    1. **スケールド・ドットプロダクト・アテンション**:
+    $$ \\text{Attention}(Q, K, V) = \\text{softmax}\\left(\\frac{QK^T}{\\sqrt{d_k}}\\right)V $$
+
+    2. **マルチヘッド・アテンション**:
+    $$ \\text{MultiHead}(Q, K, V) = \\text{Concat}(\\text{head}_1, \\text{head}_2, ..., \\text{head}_h)W^O $$
+    ここで
+    $$ \\text{head}_i = \\text{Attention}(QW_i^Q, KW_i^K, VW_i^V) $$
+
+    このアプリケーションは3種類の可視化を提供します：
+    1. **Attentionヒートマップ**: Attention重みをヒートマップとして表示します。
+    2. **トークン間の相互作用の可視化**: Attention重みに基づいてトークン間の相互作用を表示します。
+    3. **[CLS]トークンのAttentionハイライト**: [CLS]トークンとのAttention重みに基づいて入力テキストをハイライトします。
+
+    """)
+
     # モデルとトークナイザーのロード
     @st.cache_resource
     def load_model_and_tokenizer(model_name="bert-base-uncased"):

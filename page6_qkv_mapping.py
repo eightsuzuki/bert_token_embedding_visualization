@@ -189,37 +189,6 @@ def plot_all_layers_with_shared_head_reducers(
     x_vals_per_head = [[] for _ in range(num_heads)]
     y_vals_per_head = [[] for _ in range(num_heads)]
 
-    for layer_idx in range(num_layers):
-        q, k, v = model.get_qkv_from_layer(layer_idx)
-        q_split = split_heads(q, num_heads=num_heads)[0]  # (num_heads, seq_len, head_dim)
-        k_split = split_heads(k, num_heads=num_heads)[0]
-        v_split = split_heads(v, num_heads=num_heads)[0]
-
-        for head_idx in range(num_heads):
-            head_q = q_split[head_idx]  # shape: (seq_len, head_dim)
-            head_k = k_split[head_idx]  # shape: (seq_len, head_dim)
-            head_v = v_split[head_idx].detach().cpu().numpy()  # shape: (seq_len, head_dim)
-
-            # Attention スコアを計算 (shape: (seq_len, seq_len))
-            attn_scores = (head_q @ head_k.transpose(-2, -1)) * (1.0 / np.sqrt(head_q.size(-1)))
-            attn_scores = torch.nn.functional.softmax(attn_scores, dim=-1).detach().cpu().numpy()
-
-            # CLS トークンのスコアを取得 (shape: (seq_len,))
-            cls_attn = attn_scores[0, :]  # CLS トークンのスコア (行方向)
-
-            # UMAP/PCA で 2 次元へ射影
-            reduced = reducers_per_head[head_idx].transform(head_v)
-
-            # データを一時保存
-            data_dict[(layer_idx, head_idx)] = {
-                "reduced": reduced,
-                "cls_attn": cls_attn,
-            }
-
-            # 軸固定のため、ヘッドごとに x, y の値を全部集めておく
-            x_vals_per_head[head_idx].append(reduced[:, 0])
-            y_vals_per_head[head_idx].append(reduced[:, 1])
-
     # -----------------------------------------------------------
     # ヘッドごとに、全レイヤー分の x, y をまとめたときの最小値 / 最大値を求める
     # -----------------------------------------------------------
@@ -252,19 +221,107 @@ def plot_all_layers_with_shared_head_reducers(
         selected_layer, selected_head
     )
 
-def plot_selected_layer_and_head(
-    num_layers, num_heads, output_dir, output_filename, tokens, seq_len, data_dict, 
-    x_min_per_head, x_max_per_head, y_min_per_head, y_max_per_head, fig, axes, 
-    selected_layer, selected_head
+def plot_all_layers_with_shared_head_reducers(
+    text: str,
+    tokenizer,
+    model: BertModelWithQKV,
+    reducers_per_head,
+    num_layers: int = 12,
+    num_heads: int = 12,
+    max_length=20,
+    output_dir: str = None,
+    output_filename: str = None,
+    show_plot=True,
 ):
+    """
+    全レイヤーの v を 2 次元マッピングし、ヘッドごとに統一されたリダクションモデルを適用して可視化。
+    さらに、同じヘッドであればレイヤーをまたいでも x/y 軸の表示範囲を固定する。
+    """
+
+    # 1. トークナイズとモデルの forward
+    inputs = preprocess_text(text, tokenizer, max_length=max_length)
+    with torch.no_grad():
+        outputs = model(**inputs)
+    # BERTModel の場合、attention を返す設定なら outputs.attentions に各レイヤーのアテンションが入る
+    attentions = outputs.attentions  # List[Tensor], 要 config で output_attentions=True
+
+    tokens = tokenizer.convert_ids_to_tokens(inputs["input_ids"][0])
+    seq_len = len(tokens)
+
+    # -----------------------------------------------------------
+    # 1st pass: 各レイヤー・各ヘッドの次元削減結果をまとめて計算し、メモリに保持
+    # -----------------------------------------------------------
+    data_dict = {}
+    
+    for layer_idx in range(num_layers):
+        # このレイヤーのアテンション (batch_size=1 を前提に取り出し)
+        # shape: (1, num_heads, seq_len, seq_len) → [0] で (num_heads, seq_len, seq_len)
+        attn_layer = attentions[layer_idx][0]
+
+        # v を取り出す (batch_size=1 前提)
+        q, k, v = model.get_qkv_from_layer(layer_idx)
+        # v: shape (1, seq_len, hidden_dim)
+        # ヘッドに分割 (num_heads, seq_len, head_dim) にする
+        v_split = split_heads(v, num_heads=num_heads)[0]  # shape: (num_heads, seq_len, head_dim)
+
+        for head_idx in range(num_heads):
+            head_v = v_split[head_idx].numpy()  # (seq_len, head_dim)
+            # 2次元への射影
+            v_2d = reducers_per_head[head_idx].transform(head_v)  # (seq_len, 2)
+
+            # CLS トークン (index=0) から各トークンへのアテンションスコアを取り出す
+            cls_attn = attn_layer[head_idx, 0, :].cpu().numpy()  # shape: (seq_len,)
+
+            data_dict[(layer_idx, head_idx)] = {
+                "reduced": v_2d,     # shape (seq_len, 2)
+                "cls_attn": cls_attn # shape (seq_len,)
+            }
+
+    # ヘッドごとの x, y 座標を格納するためのリスト（あとで min, max を算出）
+    x_vals_per_head = [[] for _ in range(num_heads)]
+    y_vals_per_head = [[] for _ in range(num_heads)]
+
+    # 各レイヤー・各ヘッドの 2次元座標を一度集計して軸範囲を決定
+    for layer_idx in range(num_layers):
+        for head_idx in range(num_heads):
+            reduced = data_dict[(layer_idx, head_idx)]["reduced"]
+            x_vals_per_head[head_idx].append(reduced[:, 0])
+            y_vals_per_head[head_idx].append(reduced[:, 1])
+
+    # ヘッドごとに min, max
+    x_min_per_head = {}
+    x_max_per_head = {}
+    y_min_per_head = {}
+    y_max_per_head = {}
+
+    for head_idx in range(num_heads):
+        all_x = np.concatenate(x_vals_per_head[head_idx])
+        all_y = np.concatenate(y_vals_per_head[head_idx])
+        x_min_per_head[head_idx] = all_x.min()
+        x_max_per_head[head_idx] = all_x.max()
+        y_min_per_head[head_idx] = all_y.min()
+        y_max_per_head[head_idx] = all_y.max()
+
+    # -----------------------------------------------------------
+    # 2nd pass: プロット生成。ヘッドごとに同じ x/y 範囲を使用する
+    # -----------------------------------------------------------
+    fig, axes = plt.subplots(
+        num_layers, num_heads, figsize=(4 * num_heads, 4 * num_layers), squeeze=False
+    )
+
+    # Streamlit で選択されたレイヤーとヘッドをセレクトボックスで指定
+    selected_layer = st.selectbox("Select Layer", list(range(num_layers)))
+    selected_head = st.selectbox("Select Head", list(range(num_heads)))
+
+    # 全レイヤー・ヘッドのプロットを作る（今回は保存用）
     for layer_idx in range(num_layers):
         for head_idx in range(num_heads):
             reduced = data_dict[(layer_idx, head_idx)]["reduced"]
             cls_attn = data_dict[(layer_idx, head_idx)]["cls_attn"]
 
             # Attention スコアに基づくサイズ設定
-            sizes = cls_attn[1:] * 1500  # CLS トークン以外のトークン
-            cls_tkn_size = cls_attn[0] * 2000  # CLS トークン自身
+            sizes = cls_attn[1:] * 1500  # CLS以外のトークン
+            cls_tkn_size = cls_attn[0] * 2000  # CLSトークン
 
             ax = axes[layer_idx, head_idx]
             ax.scatter(reduced[1:, 0], reduced[1:, 1], s=sizes, alpha=0.5, c="blue")
@@ -274,15 +331,13 @@ def plot_selected_layer_and_head(
             )
             ax.set_title(f"Layer {layer_idx}, Head {head_idx}")
 
-            # 各ヘッドについて、全レイヤーで共有の x/y 軸範囲を固定
+            # x/y 軸の範囲をヘッドごとに固定
             ax.set_xlim([x_min_per_head[head_idx], x_max_per_head[head_idx]])
             ax.set_ylim([y_min_per_head[head_idx], y_max_per_head[head_idx]])
-
-            # 目盛りを有効化
             ax.set_xlabel("Component 1")
             ax.set_ylabel("Component 2")
 
-            # トークンを点の近くに表示
+            # トークンラベルを散布図の近くに描画
             for i in range(seq_len):
                 ax.text(
                     reduced[i, 0],
@@ -295,15 +350,13 @@ def plot_selected_layer_and_head(
                 )
 
     plt.tight_layout()
-
-    # 保存処理
     if output_dir is not None and output_filename is not None:
         os.makedirs(output_dir, exist_ok=True)
         save_path = os.path.join(output_dir, output_filename)
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
         print(f"Figure saved at: {save_path}")
 
-    # Streamlit で選択されたレイヤーとヘッドのプロットを表示
+    # Streamlit 用：選択されたレイヤー・ヘッドのみ別途プロット
     fig_selected, ax_selected = plt.subplots()
     reduced_selected = data_dict[(selected_layer, selected_head)]["reduced"]
     cls_attn_selected = data_dict[(selected_layer, selected_head)]["cls_attn"]
@@ -311,7 +364,8 @@ def plot_selected_layer_and_head(
     sizes_selected = cls_attn_selected[1:] * 1500
     cls_tkn_size_selected = cls_attn_selected[0] * 2000
 
-    ax_selected.scatter(reduced_selected[1:, 0], reduced_selected[1:, 1], s=sizes_selected, alpha=0.5, c="blue")
+    ax_selected.scatter(reduced_selected[1:, 0], reduced_selected[1:, 1], 
+                        s=sizes_selected, alpha=0.5, c="blue")
     ax_selected.scatter(
         reduced_selected[0, 0], reduced_selected[0, 1],
         s=cls_tkn_size_selected, c="red", alpha=0.8, label="CLS"
@@ -320,7 +374,6 @@ def plot_selected_layer_and_head(
 
     ax_selected.set_xlim([x_min_per_head[selected_head], x_max_per_head[selected_head]])
     ax_selected.set_ylim([y_min_per_head[selected_head], y_max_per_head[selected_head]])
-
     ax_selected.set_xlabel("Component 1")
     ax_selected.set_ylabel("Component 2")
 
@@ -339,7 +392,91 @@ def plot_selected_layer_and_head(
 
     return fig
 
+
 def render_page():
+   # 説明文を表示
+    st.markdown("""
+    # BERT Embedding Mapping
+
+    このコードは、BERTモデルの内部からクエリ (q)、キー (k)、バリュー (v) を取得し、それらを次元削減 (UMAPまたはPCA) を用いて可視化します。
+
+    ## 数式
+    BERTのセルフアテンション機構において、クエリ、キー、バリューは以下のように計算されます：
+    """)
+
+    st.latex(r'''
+    \begin{align*}
+    Q_n &= W_Q \cdot V_n \\
+    K_n &= W_K \cdot V_n \\
+    V_n &= W_V \cdot V_n
+    \end{align*}
+    ''')
+
+    st.markdown("""
+    ここで、\( W_Q \)、\( W_K \)、\( W_V \) はそれぞれクエリ、キー、バリューの重み行列であり、\( V_{n} \) は現在のレイヤーの出力です。
+
+    アテンションスコアは以下のように計算されます：
+    """)
+
+    st.latex(r'''
+    \text{Attention Scores} = \frac{Q_n \cdot K_n^T}{\sqrt{d_k}}
+    ''')
+
+    st.markdown("""
+    ここで、\( d_k \) はキーの次元数です。
+
+    ソフトマックス関数を適用して、スコアを確率に変換します：
+    """)
+
+    st.latex(r'''
+    \text{Attention Weights} = \text{softmax}\left(\frac{Q_n \cdot K_n^T}{\sqrt{d_k}}\right)
+    ''')
+
+    st.markdown("""
+    アテンションウェイトをバリューに適用して、最終的な出力を得ます：
+    """)
+
+    st.latex(r'''
+    \text{Output} = \text{Attention Weights} \cdot V_n
+    ''')
+
+    st.markdown("""
+    ## 出力
+    このコードは、各レイヤーおよび各ヘッドにおけるバリュー (v) を2次元空間にマッピングし、可視化します。可視化にはUMAPまたはPCAを使用し、各トークンのアテンションスコアに基づいてプロットのサイズを調整します。
+
+    ## 可視化の詳細
+    - 各トークンの位置は次元削減されたバリュー (v) に基づいて決定されます。
+    - 各トークンのサイズはアテンションスコアに基づいて調整されます。
+    - CLSトークンは赤色で強調表示されます。
+
+    ## 詳細な説明
+    ### アテンションスコアの計算
+    1. クエリ（Q_n）とキー（K_n）の内積を計算し、スケーリングします。
+    2. ソフトマックス関数を適用して、スコアを確率に変換します。
+
+    ### CLSトークンのアテンションスコアの取得
+    - `attn_scores[0, :]` は、CLSトークンが他のすべてのトークンに対してどれだけ注意を払っているかを示します。
+
+    ### 具体的な流れ
+    1. **クエリ、キー、バリューの計算**:
+       - 各レイヤーの各ヘッドに対して、クエリ（Q_n）、キー（K_n）、バリュー（V_n）を計算します。
+
+    2. **アテンションスコアの計算**:
+       - クエリ（Q_n）とキー（K_n）の内積を計算し、スケーリングしてソフトマックス関数を適用します。
+       - これにより、各トークンが他のトークンに対してどれだけ注意を払っているかを示すアテンションスコアが得られます。
+
+    3. **CLSトークンのアテンションスコアの取得**:
+       - CLSトークンが他のすべてのトークンに対してどれだけ注意を払っているかを示すスコアを取得します。
+
+    4. **次元削減の適用**:
+       - バリュー（V_n）テンソルに対して次元削減（UMAPまたはPCA）を適用し、2次元座標を取得します。
+
+    5. **データの保存**:
+       - 次元削減された2次元座標と、CLSトークンのアテンションスコアを辞書に保存します。
+
+    ### まとめ
+    このコードは、各レイヤーおよび各ヘッドにおけるCLSトークンのアテンションスコアを計算し、それを次元削減されたバリュー（V_n）テンソルの2次元座標とともに保存しています。これにより、CLSトークンが他のトークンに対してどれだけ注意を払っているかを視覚的に解析することができます。
+    """)
     ###############################################################################
     # 5. 動作テスト用のメイン
     ###############################################################################

@@ -13,7 +13,7 @@ st.title("トークン埋め込みの分析と可視化")
 # ページ管理
 page = st.sidebar.selectbox(
     "ページを選択してください",
-    ["attention map", "qkv mapping", "文脈構造の表現", "次元削減", "内部表現", "文字選択"]
+    ["qkv mapping", "attention map", "文脈構造の表現", "次元削減", "内部表現", "文字選択"]
 )
 
 # モデルとトークナイザーのロード
