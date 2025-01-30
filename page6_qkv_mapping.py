@@ -3,6 +3,8 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 import streamlit as st
+import joblib
+import hashlib  # 追加
 
 from typing import Dict, List
 from transformers import BertModel, BertConfig, BertTokenizer
@@ -113,11 +115,30 @@ def fit_umap_or_pca_per_head(
     num_layers: int = 12,
     num_heads: int = 12,
     use_umap: bool = True,
+    cache_dir: str = "./cache/qkv/"
 ):
     """
     全レイヤーの v を集めて、ヘッドごとに UMAP or PCA へフィットする。
     レイヤー情報は無視し、ヘッドごとに統一された次元削減モデルを作成。
     """
+    # ------------------------------------------------------------
+    # ここで入力テキストのハッシュを作り、ファイル名に反映させる
+    # ------------------------------------------------------------
+    joined_text = " ".join(texts)
+    text_hash = hashlib.md5(joined_text.encode("utf-8")).hexdigest()[:8]
+
+    if use_umap:
+        cache_file = f"reducers_umap_{text_hash}.pkl"
+    else:
+        cache_file = f"reducers_pca_{text_hash}.pkl"
+
+    cache_path = os.path.join(cache_dir, cache_file)
+
+    # すでにキャッシュファイルがあればロードして返す
+    if os.path.isfile(cache_path):
+        print(f"=== Loading reducers from local cache: {cache_path} ===")
+        return joblib.load(cache_path)
+
     # ヘッドごとの累積データ
     head_accumulated_data = [[] for _ in range(num_heads)]
 
@@ -149,13 +170,19 @@ def fit_umap_or_pca_per_head(
         reducers.append(reducer)
 
     print("=== Done fitting UMAP/PCA per head ===")
+
+    # 計算結果をキャッシュとして保存
+    os.makedirs(cache_dir, exist_ok=True)
+    joblib.dump(reducers, cache_path)
+    print(f"=== Saved reducers to local cache: {cache_path} ===")
+
     return reducers
 
 
 ###############################################################################
-# 4. 可視化用関数（ヘッドごとの軸範囲を固定）
+# 4. 可視化用データ抽出関数
 ###############################################################################
-def plot_all_layers_with_shared_head_reducers(
+def extract_plot_data(
     text: str,
     tokenizer,
     model: BertModelWithQKV,
@@ -163,14 +190,34 @@ def plot_all_layers_with_shared_head_reducers(
     num_layers: int = 12,
     num_heads: int = 12,
     max_length=20,
-    output_dir: str = None,
-    output_filename: str = None,
-    show_plot=True,
+    cache_dir: str = "./cache/qkv/"
 ):
     """
-    全レイヤーの v を 2 次元マッピングし、ヘッドごとに統一されたリダクションモデルを適用して可視化。
-    さらに、同じヘッドであればレイヤーをまたいでも x/y 軸の表示範囲を固定する。
+    テキストを入力としてモデルをフォワードし、各レイヤー・ヘッドの v を 2次元マッピングする。
+    その際に、CLSトークンのアテンションスコアなども含む可視化用のデータを一括で抽出して返す。
+
+    戻り値:
+    --------
+    data_dict: dict
+        {(layer_idx, head_idx): {"reduced": 2次元座標 (seq_len, 2), "cls_attn": (seq_len,)}}
+    x_min_per_head, x_max_per_head, y_min_per_head, y_max_per_head: dict
+        各ヘッドごとにレイヤーをまたいだときの x,y の最小・最大値
+    tokens: List[str]
+        トークナイザで分割したトークン列
+    seq_len: int
+        トークン列の長さ
     """
+    # ------------------------------------------------------------
+    # ここで単一テキストのハッシュを作り、ファイル名に反映させる
+    # ------------------------------------------------------------
+    text_hash = hashlib.md5(text.encode("utf-8")).hexdigest()[:8]
+    cache_file = f"extracted_data_{text_hash}.pkl"
+    cache_path = os.path.join(cache_dir, cache_file)
+
+    # すでにキャッシュファイルがあればロードして返す
+    if os.path.isfile(cache_path):
+        print(f"=== Loading extracted data from local cache: {cache_path} ===")
+        return joblib.load(cache_path)
 
     inputs = preprocess_text(text, tokenizer, max_length=max_length)
     with torch.no_grad():
@@ -196,33 +243,30 @@ def plot_all_layers_with_shared_head_reducers(
         v_split = split_heads(v, num_heads=num_heads)[0]
 
         for head_idx in range(num_heads):
-            head_q = q_split[head_idx]  # shape: (seq_len, head_dim)
-            head_k = k_split[head_idx]  # shape: (seq_len, head_dim)
-            head_v = v_split[head_idx].detach().cpu().numpy()  # shape: (seq_len, head_dim)
+            head_q = q_split[head_idx]
+            head_k = k_split[head_idx]
+            head_v = v_split[head_idx].detach().cpu().numpy()
 
             # Attention スコアを計算 (shape: (seq_len, seq_len))
             attn_scores = (head_q @ head_k.transpose(-2, -1)) * (1.0 / np.sqrt(head_q.size(-1)))
             attn_scores = torch.nn.functional.softmax(attn_scores, dim=-1).detach().cpu().numpy()
 
             # CLS トークンのスコアを取得 (shape: (seq_len,))
-            cls_attn = attn_scores[0, :]  # CLS トークンのスコア (行方向)
+            cls_attn = attn_scores[0, :]
 
             # UMAP/PCA で 2 次元へ射影
             reduced = reducers_per_head[head_idx].transform(head_v)
 
-            # データを一時保存
             data_dict[(layer_idx, head_idx)] = {
                 "reduced": reduced,
                 "cls_attn": cls_attn,
             }
 
-            # 軸固定のため、ヘッドごとに x, y の値を全部集めておく
+            # 軸固定のため、ヘッドごとに x, y の値を全部集める
             x_vals_per_head[head_idx].append(reduced[:, 0])
             y_vals_per_head[head_idx].append(reduced[:, 1])
 
-    # -----------------------------------------------------------
-    # ヘッドごとに、全レイヤー分の x, y をまとめたときの最小値 / 最大値を求める
-    # -----------------------------------------------------------
+    # 2nd pass: ヘッドごとに x, y の最小値 / 最大値を求める
     x_min_per_head = {}
     x_max_per_head = {}
     y_min_per_head = {}
@@ -236,35 +280,57 @@ def plot_all_layers_with_shared_head_reducers(
         y_min_per_head[head_idx] = all_y.min()
         y_max_per_head[head_idx] = all_y.max()
 
-    # -----------------------------------------------------------
-    # 2nd pass: 実際にプロットし、ヘッドごとに同じ x/y 範囲を設定
-    # -----------------------------------------------------------
+    # 結果をまとめてキャッシュに保存
+    data_to_save = (
+        data_dict,
+        x_min_per_head,
+        x_max_per_head,
+        y_min_per_head,
+        y_max_per_head,
+        tokens,
+        seq_len
+    )
+    os.makedirs(cache_dir, exist_ok=True)
+    joblib.dump(data_to_save, cache_path)
+    print(f"=== Saved extracted data to local cache: {cache_path} ===")
+
+    return data_to_save
+
+
+###############################################################################
+# 5. すべてのレイヤー & ヘッドをまとめて可視化する関数
+###############################################################################
+def plot_all_layers_with_shared_head_reducers(
+    data_dict,
+    x_min_per_head,
+    x_max_per_head,
+    y_min_per_head,
+    y_max_per_head,
+    tokens,
+    seq_len,
+    num_layers: int = 12,
+    num_heads: int = 12,
+    output_dir: str = None,
+    output_filename: str = None,
+    show_plot=True,
+):
+    """
+    全レイヤーの v を 2 次元マッピングし、ヘッドごとに統一されたリダクションモデルを適用して可視化。
+    さらに、同じヘッドであればレイヤーをまたいでも x/y 軸の表示範囲を固定する。
+    """
+
     fig, axes = plt.subplots(
         num_layers, num_heads, figsize=(4 * num_heads, 4 * num_layers), squeeze=False
     )
 
-    # Streamlit 用のセレクトボックスを作成
-    selected_layer = st.selectbox("Select Layer", list(range(num_layers)))
-    selected_head = st.selectbox("Select Head", list(range(num_heads)))
-    return plot_selected_layer_and_head(
-        num_layers, num_heads, output_dir, output_filename, tokens, seq_len, data_dict, 
-        x_min_per_head, x_max_per_head, y_min_per_head, y_max_per_head, fig, axes, 
-        selected_layer, selected_head
-    )
-
-def plot_selected_layer_and_head(
-    num_layers, num_heads, output_dir, output_filename, tokens, seq_len, data_dict, 
-    x_min_per_head, x_max_per_head, y_min_per_head, y_max_per_head, fig, axes, 
-    selected_layer, selected_head
-):
     for layer_idx in range(num_layers):
         for head_idx in range(num_heads):
             reduced = data_dict[(layer_idx, head_idx)]["reduced"]
             cls_attn = data_dict[(layer_idx, head_idx)]["cls_attn"]
 
             # Attention スコアに基づくサイズ設定
-            sizes = cls_attn[1:] * 1500  # CLS トークン以外のトークン
-            cls_tkn_size = cls_attn[0] * 2000  # CLS トークン自身
+            sizes = cls_attn[1:] * 1500  # CLS トークン以外
+            cls_tkn_size = cls_attn[0] * 2000  # CLS トークン
 
             ax = axes[layer_idx, head_idx]
             ax.scatter(reduced[1:, 0], reduced[1:, 1], s=sizes, alpha=0.5, c="blue")
@@ -278,7 +344,6 @@ def plot_selected_layer_and_head(
             ax.set_xlim([x_min_per_head[head_idx], x_max_per_head[head_idx]])
             ax.set_ylim([y_min_per_head[head_idx], y_max_per_head[head_idx]])
 
-            # 目盛りを有効化
             ax.set_xlabel("Component 1")
             ax.set_ylabel("Component 2")
 
@@ -303,7 +368,30 @@ def plot_selected_layer_and_head(
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
         print(f"Figure saved at: {save_path}")
 
-    # Streamlit 用：選択されたレイヤー・ヘッドのみ別途プロット
+    if show_plot:
+        plt.show()
+
+    return fig
+
+
+###############################################################################
+# 6. 選択したレイヤー・ヘッドのみ可視化する関数
+###############################################################################
+def plot_individual_layer_and_head(
+    data_dict,
+    x_min_per_head,
+    x_max_per_head,
+    y_min_per_head,
+    y_max_per_head,
+    tokens,
+    seq_len,
+    selected_layer,
+    selected_head
+):
+    """
+    選択されたレイヤーとヘッドの次元削減結果を表示し、CLSトークンのアテンションに応じて点のサイズを変化させる。
+    """
+
     fig_selected, ax_selected = plt.subplots()
     reduced_selected = data_dict[(selected_layer, selected_head)]["reduced"]
     cls_attn_selected = data_dict[(selected_layer, selected_head)]["cls_attn"]
@@ -311,7 +399,10 @@ def plot_selected_layer_and_head(
     sizes_selected = cls_attn_selected[1:] * 1500
     cls_tkn_size_selected = cls_attn_selected[0] * 2000
 
-    ax_selected.scatter(reduced_selected[1:, 0], reduced_selected[1:, 1], s=sizes_selected, alpha=0.5, c="blue")
+    ax_selected.scatter(
+        reduced_selected[1:, 0], reduced_selected[1:, 1],
+        s=sizes_selected, alpha=0.5, c="blue"
+    )
     ax_selected.scatter(
         reduced_selected[0, 0], reduced_selected[0, 1],
         s=cls_tkn_size_selected, c="red", alpha=0.8, label="CLS"
@@ -324,6 +415,7 @@ def plot_selected_layer_and_head(
     ax_selected.set_xlabel("Component 1")
     ax_selected.set_ylabel("Component 2")
 
+    # トークンラベルを表示
     for i in range(seq_len):
         ax_selected.text(
             reduced_selected[i, 0],
@@ -335,12 +427,14 @@ def plot_selected_layer_and_head(
             color="black",
         )
 
-    st.pyplot(fig_selected)
+    return fig_selected
 
-    return fig
 
+###############################################################################
+# 7. Streamlit用ページレンダリング関数（メイン）
+###############################################################################
 def render_page():
-   # 説明文を表示
+    # 説明文を表示
     st.markdown("""
     # BERT Embedding Mapping
 
@@ -423,12 +517,10 @@ def render_page():
     ### まとめ
     このコードは、各レイヤーおよび各ヘッドにおけるCLSトークンのアテンションスコアを計算し、それを次元削減されたバリュー（V_n）テンソルの2次元座標とともに保存しています。これにより、CLSトークンが他のトークンに対してどれだけ注意を払っているかを視覚的に解析することができます。
     """)
+
     ###############################################################################
-    # 5. 動作テスト用のメイン
-    ###############################################################################
-    # =======================
     # モデル・トークナイザ等の準備
-    # =======================
+    ###############################################################################
     model_name = "bert-base-uncased"
     tokenizer = BertTokenizer.from_pretrained(model_name)
     model = load_bert_with_qkv(model_name)
@@ -442,9 +534,7 @@ def render_page():
     num_heads = 12
     use_umap = True
 
-    # =======================
-    # ヘッドごとに次元削減モデルをフィッティング
-    # =======================
+    # （こちらも重い処理ならば disk キャッシュで高速化が可能です）
     reducers_per_head = fit_umap_or_pca_per_head(
         texts=texts_for_fitting,
         tokenizer=tokenizer,
@@ -452,13 +542,26 @@ def render_page():
         num_layers=num_layers,
         num_heads=num_heads,
         use_umap=use_umap,
+        cache_dir="./cache/qkv/"  # ※入力文章に応じた名前を付けたファイルをここに保存
     )
 
-    # =======================
+    ###############################################################################
     # 可視化と保存
-    # =======================
-    text_to_plot = "She was a teacher for forty years and her writing has appeared in journals and anthologies since the early 1980s."
-    fig = plot_all_layers_with_shared_head_reducers(
+    ###############################################################################
+    text_to_plot = (
+        "She was a teacher for forty years and her writing has appeared in journals and "
+        "anthologies since the early 1980s."
+    )
+
+    (
+        data_dict,
+        x_min_per_head,
+        x_max_per_head,
+        y_min_per_head,
+        y_max_per_head,
+        tokens,
+        seq_len
+    ) = extract_plot_data(
         text=text_to_plot,
         tokenizer=tokenizer,
         model=model,
@@ -466,12 +569,44 @@ def render_page():
         num_layers=num_layers,
         num_heads=num_heads,
         max_length=16,
-        output_dir="image/qkv_outputs",
-        output_filename="all_layers_heads_values.png",
-        show_plot=False,
+        cache_dir="./cache/qkv/"  # ※単一テキストに応じた名前を付けたファイルをここに保存
     )
 
-    st.pyplot(fig)
+    if st.button("Plot All Layers and Heads"):
+        fig_all = plot_all_layers_with_shared_head_reducers(
+            data_dict=data_dict,
+            x_min_per_head=x_min_per_head,
+            x_max_per_head=x_max_per_head,
+            y_min_per_head=y_min_per_head,
+            y_max_per_head=y_max_per_head,
+            tokens=tokens,
+            seq_len=seq_len,
+            num_layers=num_layers,
+            num_heads=num_heads,
+            output_dir="image/qkv_outputs",
+            output_filename="all_layers_heads_values.png",
+            show_plot=False,
+        )
+        st.pyplot(fig_all)
 
+    selected_layer = st.selectbox("Select Layer", list(range(num_layers)))
+    selected_head = st.selectbox("Select Head", list(range(num_heads)))
+    
+    if st.button("Plot Selected Layer and Head"):
+        fig_selected = plot_individual_layer_and_head(
+            data_dict=data_dict,
+            x_min_per_head=x_min_per_head,
+            x_max_per_head=x_max_per_head,
+            y_min_per_head=y_min_per_head,
+            y_max_per_head=y_max_per_head,
+            tokens=tokens,
+            seq_len=seq_len,
+            selected_layer=selected_layer,
+            selected_head=selected_head
+        )
+        st.pyplot(fig_selected)
+
+
+# スクリプト実行時のエントリーポイント
 if __name__ == "__main__":
     render_page()

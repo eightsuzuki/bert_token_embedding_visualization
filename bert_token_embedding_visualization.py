@@ -16,12 +16,6 @@ page = st.sidebar.selectbox(
     ["qkv mapping", "attention map", "文脈構造の表現", "次元削減", "内部表現", "文字選択"]
 )
 
-# モデルとトークナイザーのロード
-def load_model_and_tokenizer():
-    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
-    model = BertModel.from_pretrained("bert-base-uncased", output_hidden_states=True)
-    return tokenizer, model
-
 if page == "attention map":
     import page5_attention_map
     page5_attention_map.render_page()
@@ -32,6 +26,12 @@ if page == "qkv mapping":
     page6_qkv_mapping.render_page()
     st.stop()
     
+# モデルとトークナイザーのロード
+def load_model_and_tokenizer():
+    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+    model = BertModel.from_pretrained("bert-base-uncased", output_hidden_states=True)
+    return tokenizer, model
+
 tokenizer, model = load_model_and_tokenizer()
 
 if page == "文脈構造の表現":
