@@ -80,7 +80,7 @@ def extract_attention_data(text, tokenizer, model, num_layers=12, num_heads=12, 
             q, k, _ = model.get_qkv_from_layer(layer_idx - 1)
         q_split = split_heads(q, num_heads=num_heads)[0]  # (num_heads, seq_len, head_dim)
         k_split = split_heads(k, num_heads=num_heads)[0]  # (num_heads, seq_len, head_dim)
-        # 注意行列 A^{(l)} を計算： softmax((q·k^T)/sqrt(d_k))
+        # 注意行列 A^{(l)} の計算： softmax((q·k^T)/sqrt(d_k))
         attn_logits = torch.matmul(q_split, k_split.transpose(-2, -1))  # (num_heads, seq_len, seq_len)
         d_k = q_split.size(-1)
         attn_scores = attn_logits / np.sqrt(d_k)
@@ -187,8 +187,8 @@ def render_page():
     A^{(l)} = \mathrm{softmax}\Bigl(\frac{q^{(l)}\cdot\bigl(k^{(l)}\bigr)^\top}{\sqrt{d_k}}\Bigr)
     \]
     （[PAD] トークンは除外）から、指定した計算方法（Attention Rollout または Attention Flow）により、
-    最終層で注目するトークンへの累積寄与を各【ソース層】（レイヤー 0～10）ごとに計算し、  
-    その影響を背景色（赤の濃さ）付きのテーブル形式（縦方向：各行に層番号）で表示します。
+    最終層で注目するトークンへの累積寄与を各【ソース層】（Layer 0～10）ごとに計算し、  
+    その影響を背景色（赤の濃さ）付きのテーブル形式（各行に層番号）で表示します。
     """)
     
     st.markdown("### Attention Rollout")
@@ -209,34 +209,37 @@ def render_page():
     selected_method = st.selectbox("計算方法を選択", ["rollout", "flow"],
                                    format_func=lambda x: "Attention Rollout" if x=="rollout" else "Attention Flow")
     selected_head = st.selectbox("対象ヘッド (0～{0})".format(num_heads - 1), list(range(num_heads)))
-    selected_token_idx = st.number_input("最終層で注目するトークン番号 (0-indexed)", min_value=0, value=0, step=1)
     
-    if st.button("計算して全層の影響を表示する"):
+    # ここで、入力テキストがある場合、事前に注意重みを抽出して Token リストを取得
+    if text_input:
         model_name = "bert-base-uncased"
         tokenizer = BertTokenizer.from_pretrained(model_name)
         config = BertConfig.from_pretrained(model_name, output_attentions=True)
         model = BertModelWithQKV.from_pretrained(model_name, config=config)
         model.eval()
-        
         data_dict, tokens = extract_attention_data(text_input, tokenizer, model,
                                                      num_layers=num_layers, num_heads=num_heads, max_length=32)
-        end_layer = num_layers - 1
+        # Token 選択肢は「番号: Token文字列」で表示
+        token_options = [f"{i}: {token}" for i, token in enumerate(tokens)]
+        selected_token_option = st.selectbox("最終層で注目するトークン", token_options)
+        selected_token_idx = int(selected_token_option.split(":")[0])
         
-        # 各ソース層（レイヤー 0～10）ごとに寄与度を計算し、テーブルの各行に表示
-        table_html = "<div style='overflow-x:auto;'><table border=1 style='border-collapse: collapse; white-space: nowrap;'>"
-        table_html += "<tr><th style='padding:8px;'>Layer</th><th style='padding:8px;'>Influence (背景色付き)</th></tr>"
-        for src_layer in range(num_layers - 1):
-            influence = get_influence_vector(data_dict, selected_head,
-                                             start_layer=src_layer,
-                                             end_layer=end_layer,
-                                             selected_token_idx=selected_token_idx,
-                                             method=selected_method)
-            cell_html = render_influence_on_text(tokens, influence)
-            table_html += f"<tr><td style='padding:8px;'>Layer {src_layer}</td><td style='padding:8px;'>{cell_html}</td></tr>"
-        table_html += "</table></div>"
-        
-        st.markdown("### 各層からの影響（背景色付き）", unsafe_allow_html=True)
-        st.markdown(table_html, unsafe_allow_html=True)
-        
+        if st.button("計算して全層の影響を表示する"):
+            end_layer = num_layers - 1
+            # 各ソース層（Layer 0～10）ごとに寄与度を計算し、テーブル形式（縦方向）で表示
+            table_html = "<div style='overflow-x:auto;'><table border=1 style='border-collapse: collapse; white-space: nowrap;'><tr><th style='padding:8px;'>Layer</th><th style='padding:8px;'>Influence (背景色付き)</th></tr>"
+            for src_layer in range(num_layers - 1):
+                influence = get_influence_vector(data_dict, selected_head,
+                                                 start_layer=src_layer,
+                                                 end_layer=end_layer,
+                                                 selected_token_idx=selected_token_idx,
+                                                 method=selected_method)
+                cell_html = render_influence_on_text(tokens, influence)
+                table_html += f"<tr><td style='padding:8px;'>Layer {src_layer}</td><td style='padding:8px;'>{cell_html}</td></tr>"
+            table_html += "</table></div>"
+            
+            st.markdown("### 各層からの影響（背景色付き）", unsafe_allow_html=True)
+            st.markdown(table_html, unsafe_allow_html=True)
+
 if __name__ == "__main__":
     render_page()

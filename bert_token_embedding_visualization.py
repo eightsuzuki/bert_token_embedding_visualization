@@ -13,12 +13,12 @@ st.title("トークン埋め込みの分析と可視化")
 # ページ管理
 page = st.sidebar.selectbox(
     "ページを選択してください",
-    ["LRP", "attention LRP flow", "qkv attention mapping", "attention map", "文脈構造の表現", "次元削減", "内部表現", "文字選択"]
+    ["attention flow", "LRP", "qkv attention mapping", "attention map", "文脈構造の表現", "次元削減", "内部表現", "文字選択"]
 )
 
-if page == "LRP":
-    import page8_LRP
-    page8_LRP.render_page()
+if page == "attention flow":
+    import page8_attention_flow
+    page8_attention_flow.render_page()
     st.stop()
 
 if page == "attention map":
@@ -31,9 +31,9 @@ if page == "qkv attention mapping":
     page6_qkv_attention_mapping.render_page()
     st.stop()
     
-if page == "attention LRP flow":
-    import page7_attention_LRP_flow
-    page7_attention_LRP_flow.render_page()
+if page == "LRP":
+    import page7_LRP
+    page7_LRP.render_page()
     st.stop()
     
 # モデルとトークナイザーのロード
