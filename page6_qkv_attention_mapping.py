@@ -439,7 +439,7 @@ def animate_selected_head_across_layers_plotly(
     selected_head,
     selected_token_idx=0,
     num_layers: int = 12,
-    min_size: int = 10  # 追加: サイズの最低値
+    min_size: int = 0  # 追加: サイズの最低値
 ):
     """
     選択したヘッドを固定し、レイヤー 0~(num_layers-1) の変化を
@@ -465,7 +465,7 @@ def animate_selected_head_across_layers_plotly(
                 "Layer": layer_idx,
                 "Token": tokens[i],
                 "Label": color_label,
-                "Size": sizes[i] * 2  # サイズを調整
+                "Size": sizes[i] + 5  # サイズを調整
             })
 
     df_combined = pd.DataFrame(rows)
