@@ -254,6 +254,9 @@ def extract_plot_data_across_layers(
       "attn_scores": (seq_len, seq_len) -> アテンション行列 ω_{i j}
       "v_prev": (seq_len, hidden_dim)    -> 前レイヤーの v_{(L-1), j}
     }
+
+    ※ここでは [PAD] トークン（paddingされた部分）を除外して可視化するため、
+    モデル入力後に attention_mask あるいは token の文字列から除外する処理を行います。
     """
     import hashlib
     text_hash = hashlib.md5(text.encode("utf-8")).hexdigest()[:8]
@@ -272,7 +275,10 @@ def extract_plot_data_across_layers(
 
     # トークナイズ結果を保存
     tokens = tokenizer.convert_ids_to_tokens(inputs["input_ids"][0])
-    seq_len = len(tokens)
+    # [PAD] を除外するため、attention_mask またはトークン内容でフィルタリング
+    valid_indices = [i for i, token in enumerate(tokens) if token != "[PAD]"]
+    tokens = [tokens[i] for i in valid_indices]
+    seq_len = len(valid_indices)
 
     # 全レイヤーの Q, K, V を辞書に格納
     q_layer_dict = {}
@@ -301,37 +307,44 @@ def extract_plot_data_across_layers(
             q = q_layer_dict[layer_idx - 1]
             k = k_layer_dict[layer_idx - 1]
 
-        q_split = split_heads(q, num_heads=num_heads)[0]       # shape: (num_heads, seq_len, head_dim)
-        k_split = split_heads(k, num_heads=num_heads)[0]       # shape: (num_heads, seq_len, head_dim)
-        v_split_prev = split_heads(v_prev, num_heads=num_heads)[0]  # shape: (num_heads, seq_len, head_dim)
+        q_split = split_heads(q, num_heads=num_heads)[0]         # (num_heads, full_seq_len, head_dim)
+        k_split = split_heads(k, num_heads=num_heads)[0]         # (num_heads, full_seq_len, head_dim)
+        v_split_prev = split_heads(v_prev, num_heads=num_heads)[0] # (num_heads, full_seq_len, head_dim)
 
         # 内積からアテンションスコアを計算
-        attn_logits = torch.matmul(q_split, k_split.transpose(-2, -1))  # (num_heads, seq_len, seq_len)
+        attn_logits = torch.matmul(q_split, k_split.transpose(-2, -1))  # (num_heads, full_seq_len, full_seq_len)
         d_k = q_split.size(-1)
         attn_scores = attn_logits / np.sqrt(d_k)
-        attn_scores = torch.nn.functional.softmax(attn_scores, dim=-1)  # (num_heads, seq_len, seq_len)
+        attn_scores = torch.nn.functional.softmax(attn_scores, dim=-1)  # (num_heads, full_seq_len, full_seq_len)
 
         # 各ヘッドごとに v_{(L), i} = Σ_j [ ω_{i j} * v_{(L-1), j} ] を計算 -> 2D に投影
         for head_idx in range(num_heads):
-            head_attn = attn_scores[head_idx]      # (seq_len, seq_len)
-            head_v_prev = v_split_prev[head_idx]   # (seq_len, head_dim)
+            head_attn = attn_scores[head_idx]       # (full_seq_len, full_seq_len)
+            head_v_prev = v_split_prev[head_idx]      # (full_seq_len, head_dim)
 
-            v_L = torch.matmul(head_attn, head_v_prev)  # (seq_len, head_dim)
+            v_L = torch.matmul(head_attn, head_v_prev)  # (full_seq_len, head_dim)
 
             # 2次元に射影
             reducer = reducers_per_head[head_idx]
             v_L_np = v_L.detach().cpu().numpy()
             # (optional) 平行移動: -1 などは可視化を整えるためのサンプル
-            reduced = reducer.transform(v_L_np - 1)  # (seq_len, 2)
+            reduced = reducer.transform(v_L_np - 1)  # (full_seq_len, 2)
+
+            # [PAD] 部分のインデックス（valid_indices）だけを抽出する
+            reduced_valid = reduced[np.array(valid_indices)]
+            head_attn_np = head_attn.cpu().numpy()
+            attn_valid = head_attn_np[np.ix_(valid_indices, valid_indices)]
+            head_v_prev_np = head_v_prev.cpu().numpy()
+            v_prev_valid = head_v_prev_np[np.array(valid_indices)]
 
             data_dict[(layer_idx, head_idx)] = {
-                "reduced": reduced,
-                "attn_scores": head_attn.cpu().numpy(),
-                "v_prev": head_v_prev.cpu().numpy()
+                "reduced": reduced_valid,
+                "attn_scores": attn_valid,
+                "v_prev": v_prev_valid
             }
 
-            x_vals_per_head[head_idx].append(reduced[:, 0])
-            y_vals_per_head[head_idx].append(reduced[:, 1])
+            x_vals_per_head[head_idx].append(reduced_valid[:, 0])
+            y_vals_per_head[head_idx].append(reduced_valid[:, 1])
 
     # ヘッドごとの x, y の min/max を取得 -> プロット範囲に利用
     x_min_per_head = {}
@@ -587,7 +600,7 @@ def render_page():
 
     st.markdown("### 可視化: Relevance の 3 種類を比較")
 
-    # トークン一覧を表示
+    # トークン一覧を表示 (※[PAD] は除外済み)
     st.write("#### トークン一覧")
     st.write(tokens)
 
