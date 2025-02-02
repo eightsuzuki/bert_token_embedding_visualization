@@ -597,7 +597,7 @@ def render_page():
     model.eval()
 
     texts_for_fitting = [
-        "She was a teacher for forty years and her writing has appeared in journals and anthologies since the early 1980s."
+        "My dog is cute. He likes play running."
     ]
 
     num_layers = 12
@@ -616,8 +616,8 @@ def render_page():
     )
 
     text_to_plot = (
-        "She was a teacher for forty years and her writing has appeared in journals and "
-        "anthologies since the early 1980s."
+        "My dog is cute. "
+        "He likes play running."
     )
 
     (

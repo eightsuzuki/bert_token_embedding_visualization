@@ -553,7 +553,7 @@ def render_page():
     use_umap = True  # UMAP で次元削減
 
     st.markdown("### 次元削減器 (UMAP または PCA) の準備")
-    texts_for_fitting = ["She was a teacher for forty years and her writing has appeared in journals and anthologies."]
+    texts_for_fitting = ["My dog is cute. He likes play running."]
     reducers_per_head = fit_umap_or_pca_on_last_layer(
         texts=texts_for_fitting,
         tokenizer=tokenizer,
@@ -567,7 +567,7 @@ def render_page():
     st.markdown("### デモ用テキストを入力")
     text_to_plot = st.text_area(
         "入力する文章 (英語)",
-        "She was a teacher for forty years and her writing has appeared in journals and anthologies."
+        "My dog is cute. He likes play running."
     )
 
     # レイヤーをまたいだデータ (v_{(L), i} の2D座標など) を取得
