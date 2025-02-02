@@ -157,7 +157,7 @@ def compute_attention_rollout_from_layer(data_dict, selected_head,
         else:
             # 残差を足さない場合
             A_hat = A / (A.sum(axis=-1, keepdims=True) + 1e-8)
-        R = A_hat @ R  # 右から掛けるか左から掛けるかは定義次第（ここでは左からA_hatをかけている）
+        R = A_hat @ R  # ここはA_hatを左から掛けている
 
     return R
 
@@ -169,11 +169,6 @@ def compute_attention_flow_from_layer(data_dict, selected_head,
     ここでは、
       F^{(l)} = A^{(l)} + A^{(l)} * F^{(l-1)}
     の形で累積し、各層ごとに row-wise 正規化を行う近似実装。
-    本来は論文で示されるように「最大フロー問題」として解く必要があるが、簡易化のための実装。
-
-    数式イメージ:
-      F^{(L_0)} = 0
-      F^{(l)} = softmax_row( A^{(l)} + A^{(l)} * F^{(l-1)} )
     """
     attn_matrices = []
     for layer_idx in range(start_layer + 1, end_layer + 1):
@@ -196,17 +191,19 @@ def compute_attention_flow_from_layer(data_dict, selected_head,
     return F
 
 def get_influence_vector(data_dict, selected_head, start_layer,
-                         end_layer, selected_token_idx, method="rollout"):
+                         end_layer, selected_token_idx, method="rollout",
+                         add_residual=True):  # ★ ここを修正
     """
     指定した method に応じて累積行列 R (または F) を計算し、
     その最終的な行ベクトル (selected_token_idx の行) を取り出す。
+    
+    add_residual: Rollout時に I を足すかどうか (True/False)
     """
     if method == "rollout":
-        # 論文に近づけるため、デフォルトで add_residual=True
         R = compute_attention_rollout_from_layer(
             data_dict, selected_head,
             start_layer, end_layer,
-            add_residual=True
+            add_residual=add_residual  # ★ ここを修正
         )
         influence = R[selected_token_idx]
 
@@ -265,7 +262,7 @@ def render_page():
     最終層での寄与 \( R \) を求めます。
     """)
     st.latex(r"R = \prod_{l=L_0+1}^{L} \frac{A^{(l)} + I}{\sum_{j}(A^{(l)} + I)_{ij}}")
-    st.image("img/attention_rollout.gif", caption="Attention Rollout のイメージ図")
+    
     st.markdown("""
     ### Attention Flow
     Attention Flow は以下のように再帰的に計算されます：
@@ -273,20 +270,25 @@ def render_page():
     st.latex(r"F^{(l)} = \frac{A^{(l)} + A^{(l)}F^{(l-1)}}{\sum_{j}(A^{(l)} + A^{(l)}F^{(l-1)})_{ij}},\quad F^{(L_0)}=0,\quad F=F^{(L)}")
     
     st.markdown("""
-    各層で \( F^{(l)} \) を計算し、最終層でのトークンの影響度を可視化します。
+    ---  
+    ### 入力テキストの設定
     """)
-    st.image("img/attention_flow.gif", caption="Attention Flow のイメージ図")
-    
-    st.markdown("---")
-    st.markdown("### 入力テキストの設定")
     text_input = st.text_area(
         "入力テキスト (英語) を入力してください",
         "My dog is cute. He likes play running."
     )
 
-    selected_method = st.selectbox("計算方法 (method)", ["rollout", "flow"],
-        format_func=lambda x: "Attention Rollout" if x=="rollout" else "Attention Flow"
+    # 計算方法を選択
+    selected_method = st.selectbox(
+        "計算方法 (method)",
+        ["rollout", "flow"],
+        format_func=lambda x: "Attention Rollout" if x == "rollout" else "Attention Flow"
     )
+
+    # ★ ここで Rollout の時だけ "I を足す" オプションを表示させる
+    add_residual = True
+    if selected_method == "rollout":
+        add_residual = st.checkbox("Rollout時に I（単位行列）を足す", value=True)
 
     # BERT-base の標準構成
     num_layers = 12
@@ -313,7 +315,6 @@ def render_page():
         )
 
         # 3. 「どのトークンに対する最終層の寄与を追うか」選択
-        #    -> トークンは "index: token文字列" の形で表示
         token_options = [f"{i}: {token}" for i, token in enumerate(tokens)]
         selected_token_option = st.selectbox(
             "最終層で注目するトークン（どのトークンに注目するか）",
@@ -330,8 +331,6 @@ def render_page():
             end_layer = num_layers - 1
 
             # テーブル表示: 各層 (0~10) を「ソース層」として累積した場合の可視化
-            # ただし実運用上は「ソース層を 0 に固定」または「全部を一気にかけ合わせる」ほうが多い。
-            # 学習・解釈用に、あえて層ごとの可視化をしている。
             table_html = "<div style='overflow-x:auto;'>"
             table_html += "<table border=1 style='border-collapse: collapse; white-space: nowrap;'>"
             table_html += (
@@ -348,7 +347,8 @@ def render_page():
                     start_layer=src_layer,
                     end_layer=end_layer,
                     selected_token_idx=selected_token_idx,
-                    method=selected_method
+                    method=selected_method,
+                    add_residual=add_residual  # ★ ここを修正
                 )
                 cell_html = render_influence_on_text(tokens, influence)
                 table_html += (
