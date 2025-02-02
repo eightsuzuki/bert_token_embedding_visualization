@@ -6,7 +6,6 @@ import streamlit as st
 import joblib
 import hashlib
 from sklearn.decomposition import PCA
-
 from typing import Dict, List
 from transformers import BertModel, BertConfig, BertTokenizer
 
@@ -178,8 +177,9 @@ def compute_relevance(
     attn_weights: np.ndarray,  # shape: (seq_len,) => ω_{i j}
     v_prev: np.ndarray,        # shape: (seq_len, dim) => v_{(L-1), j} 一覧
     v_i: np.ndarray,           # shape: (dim,)        => v_{(L-1), i}
-    v_i_prime: np.ndarray = None,  # shape: (dim,)    => v_{(L), i} = Σ_j [ ω_{i j} * v_j ]
-    rule_type: str = "raw"     # "raw", "weighted_distance", "weighted_projection"
+    v_i_prime: np.ndarray = None,  # shape: (dim,)    => v_{(L), i} = Σ_j [ ω_{i j} * v_j ] (+ skip)
+    rule_type: str = "raw",    # "raw", "weighted_distance", "weighted_projection"
+    use_skip_connection: bool = False
 ):
     """
     Relevance (r_{i j}) を計算する。
@@ -187,11 +187,26 @@ def compute_relevance(
     ② weighted_distance : r_{i j} ∝ w_{i j} * ||v_j - v_i||
     ③ weighted_projection : r_{i j} ∝ w_{i j} * |(v_j - v_i)・(v_i' - v_i)|
 
+    Skip Connection がある場合は:
+      v'_i = v_i + Σ_j [ ω_{i j} * v_j ]
+    無い場合は:
+      v'_i = Σ_j [ ω_{i j} * v_j ]
+
     最後に r_{i j} を正規化し、∑_j r_{i j} = 1, r_{i j} >= 0 となるようにする。
     """
     eps = 1e-12
     seq_len = len(attn_weights)
 
+    # v_i_prime が None なら、ここで計算してもいいし、呼び出し元で計算済みなら渡してもよい
+    if v_i_prime is None:
+        if use_skip_connection:
+            # v'_i = v_i + Σ_j [ ω_{i j} * v_j ]
+            v_i_prime = v_i + np.sum(v_prev * attn_weights[:, None], axis=0)
+        else:
+            # v'_i = Σ_j [ ω_{i j} * v_j ]
+            v_i_prime = np.sum(v_prev * attn_weights[:, None], axis=0)
+
+    # ルールに応じて計算
     if rule_type == "raw":
         # ① 生のアテンション重みそのまま
         r = attn_weights.copy()
@@ -203,14 +218,10 @@ def compute_relevance(
 
     elif rule_type == "weighted_projection":
         # ③ アテンション重みに (v_j - v_i) と (v'_i - v_i) の内積の絶対値を掛ける
-        if v_i_prime is None:
-            # v_i_prime が無い場合は raw にフォールバック
-            r = attn_weights.copy()
-        else:
-            diff = (v_prev - v_i)          # shape: (seq_len, dim)
-            direction = (v_i_prime - v_i)  # shape: (dim,)
-            dotvals = np.einsum('md,d->m', diff, direction)  # shape: (seq_len,)
-            r = attn_weights * np.abs(dotvals)
+        diff = (v_prev - v_i)          # shape: (seq_len, dim)
+        direction = (v_i_prime - v_i)  # shape: (dim,)
+        dotvals = np.einsum('md,d->m', diff, direction)  # shape: (seq_len,)
+        r = attn_weights * np.abs(dotvals)
 
     else:
         # それ以外は raw
@@ -228,8 +239,8 @@ def compute_relevance(
 
 
 ###############################################################################
-# 5. BERT の各レイヤーごとに ω_{i j} を計算して Value を合成 (v_{(L), i}) を求める
-#    -> さらに次元削減器 (reducers_per_head) を用いて 2D に投影して記録
+# 5. BERT の各レイヤーごとに ω_{i j} を計算して Value を合成 -> 2D 投影
+#    Skip Connection ON/OFF を切り替え可能
 ###############################################################################
 def extract_plot_data_across_layers(
     text: str,
@@ -239,28 +250,28 @@ def extract_plot_data_across_layers(
     num_layers: int = 12,
     num_heads: int = 12,
     max_length=20,
-    cache_dir: str = "./cache/qkv/"
+    cache_dir: str = "./cache/qkv/",
+    use_skip_connection: bool = False
 ):
     """
     指定テキストに対して BERT を通し、
     各レイヤー L(0..num_layers-1) の Q, K, V を取得して、
-    v_{(L), i} = Σ_j [ ω_{i j} * v_{(L-1), j} ] を計算します。
+    v_{(L), i} = (skip ? v_{(L-1), i} + ) Σ_j [ ω_{i j} * v_{(L-1), j} ] を計算します。
 
     その上で、reducers_per_head[head_idx] によって 2D へ投影 (UMAP or PCA) した結果を
     data_dict に格納します。
 
     data_dict[(layer, head)] = {
-      "reduced": (seq_len, 2)  -> 2次元座標
-      "attn_scores": (seq_len, seq_len) -> アテンション行列 ω_{i j}
-      "v_prev": (seq_len, hidden_dim)    -> 前レイヤーの v_{(L-1), j}
+      "reduced": (seq_len, 2),      # 2次元座標
+      "attn_scores": (seq_len, seq_len), # アテンション行列 ω_{i j}
+      "v_prev": (seq_len, hidden_dim)    # 前レイヤーの v_{(L-1), j}
     }
 
-    ※ここでは [PAD] トークン（paddingされた部分）を除外して可視化するため、
-    モデル入力後に attention_mask あるいは token の文字列から除外する処理を行います。
+    Skip Connection は boolean 引数 use_skip_connection で切替。
     """
     import hashlib
     text_hash = hashlib.md5(text.encode("utf-8")).hexdigest()[:8]
-    cache_file = f"extract_xlayer_{text_hash}.pkl"
+    cache_file = f"extract_xlayer_{text_hash}_{use_skip_connection}.pkl"
     cache_path = os.path.join(cache_dir, cache_file)
 
     # キャッシュがあればロード
@@ -295,10 +306,9 @@ def extract_plot_data_across_layers(
     y_vals_per_head = [[] for _ in range(num_heads)]
 
     for layer_idx in range(num_layers):
-        # 前レイヤーの v を取り出し、Q, K を使ってアテンションスコアを計算
         if layer_idx == 0:
-            # L=0 の場合、"前レイヤー" は存在しないが実装上は v_layer_dict[-1] は無いので
-            v_prev = v_layer_dict[layer_idx]
+            # L=0 の場合
+            v_prev = v_layer_dict[layer_idx]   # shape: (batch_size, seq_len, hidden_dim)
             q = q_layer_dict[layer_idx]
             k = k_layer_dict[layer_idx]
         else:
@@ -307,30 +317,35 @@ def extract_plot_data_across_layers(
             q = q_layer_dict[layer_idx - 1]
             k = k_layer_dict[layer_idx - 1]
 
-        q_split = split_heads(q, num_heads=num_heads)[0]         # (num_heads, full_seq_len, head_dim)
-        k_split = split_heads(k, num_heads=num_heads)[0]         # (num_heads, full_seq_len, head_dim)
-        v_split_prev = split_heads(v_prev, num_heads=num_heads)[0] # (num_heads, full_seq_len, head_dim)
+        # (batch=1 前提)
+        q_split = split_heads(q, num_heads=num_heads)[0]          # (num_heads, full_seq_len, head_dim)
+        k_split = split_heads(k, num_heads=num_heads)[0]          # (num_heads, full_seq_len, head_dim)
+        v_split_prev = split_heads(v_prev, num_heads=num_heads)[0]# (num_heads, full_seq_len, head_dim)
 
-        # 内積からアテンションスコアを計算
-        attn_logits = torch.matmul(q_split, k_split.transpose(-2, -1))  # (num_heads, full_seq_len, full_seq_len)
+        attn_logits = torch.matmul(q_split, k_split.transpose(-2, -1))
         d_k = q_split.size(-1)
         attn_scores = attn_logits / np.sqrt(d_k)
-        attn_scores = torch.nn.functional.softmax(attn_scores, dim=-1)  # (num_heads, full_seq_len, full_seq_len)
+        attn_scores = torch.nn.functional.softmax(attn_scores, dim=-1)
 
-        # 各ヘッドごとに v_{(L), i} = Σ_j [ ω_{i j} * v_{(L-1), j} ] を計算 -> 2D に投影
         for head_idx in range(num_heads):
-            head_attn = attn_scores[head_idx]       # (full_seq_len, full_seq_len)
-            head_v_prev = v_split_prev[head_idx]      # (full_seq_len, head_dim)
+            head_attn = attn_scores[head_idx]     # (full_seq_len, full_seq_len)
+            head_v_prev = v_split_prev[head_idx]  # (full_seq_len, head_dim)
 
-            v_L = torch.matmul(head_attn, head_v_prev)  # (full_seq_len, head_dim)
+            # Attention の合成結果
+            v_out_no_skip = torch.matmul(head_attn, head_v_prev)  # (full_seq_len, head_dim)
 
-            # 2次元に射影
-            reducer = reducers_per_head[head_idx]
-            v_L_np = v_L.detach().cpu().numpy()
-            # (optional) 平行移動: -1 などは可視化を整えるためのサンプル
-            reduced = reducer.transform(v_L_np - 1)  # (full_seq_len, 2)
+            # Skip Connection ON/OFF の切り替え
+            if use_skip_connection:
+                # BERT の Residual Connection (簡易版)
+                v_out = head_v_prev + v_out_no_skip
+            else:
+                v_out = v_out_no_skip
 
-            # [PAD] 部分のインデックス（valid_indices）だけを抽出する
+            # 2次元に射影 (UMAP or PCA)
+            v_out_np = v_out.detach().cpu().numpy()
+            reduced = reducers_per_head[head_idx].transform(v_out_np)
+
+            # [PAD] 部分のインデックス（valid_indices）だけを抽出
             reduced_valid = reduced[np.array(valid_indices)]
             head_attn_np = head_attn.cpu().numpy()
             attn_valid = head_attn_np[np.ix_(valid_indices, valid_indices)]
@@ -343,6 +358,7 @@ def extract_plot_data_across_layers(
                 "v_prev": v_prev_valid
             }
 
+            # x, y の min / max 記録用
             x_vals_per_head[head_idx].append(reduced_valid[:, 0])
             y_vals_per_head[head_idx].append(reduced_valid[:, 1])
 
@@ -396,10 +412,14 @@ def animate_selected_head_across_layers_plotly_cross(
     num_layers: int = 12,
     min_size: float = 5.0,
     margin_ratio: float = 0.1,
+    use_skip_connection: bool = False,  # ← 追加
 ):
     """
     指定したヘッドを固定し、Layer=1..(num_layers-1) の変化をアニメーション表示。
     Relevance = r_{i j} を計算し、その値を円のサイズに利用して可視化する。
+
+    Skip Connection = True の場合、v'_i = v_i + ∑ ω_{i j}v_j
+    Skip Connection = False の場合、v'_i = ∑ ω_{i j}v_j
     """
     import pandas as pd
     import plotly.express as px
@@ -419,11 +439,14 @@ def animate_selected_head_across_layers_plotly_cross(
 
         # 選択トークン i = selected_token_idx が他トークン j に払う注意を取り出す
         attn_sel = attn[selected_token_idx, :]  # shape: (seq_len,)
-        # "i" に該当するベクトル v_i
+        # v_i
         v_i = v_prev[selected_token_idx]        # shape: (hidden_dim,)
 
-        # 合成後のベクトル v'_i
-        v_i_prime = np.sum(v_prev * attn_sel[:, None], axis=0)
+        # v'_i (skip or not)
+        if use_skip_connection:
+            v_i_prime = v_i + np.sum(v_prev * attn_sel[:, None], axis=0)
+        else:
+            v_i_prime = np.sum(v_prev * attn_sel[:, None], axis=0)
 
         # Relevance を計算
         r = compute_relevance(
@@ -431,18 +454,21 @@ def animate_selected_head_across_layers_plotly_cross(
             v_prev=v_prev,
             v_i=v_i,
             v_i_prime=v_i_prime,
-            rule_type=rule_type
+            rule_type=rule_type,
+            use_skip_connection=use_skip_connection
         )
 
-        # 前レイヤーの座標を点として打ち、そのサイズに Relevance を反映
-        data_prev_L = data_dict.get((layer_idx - 1, selected_head), None)
+        # 前レイヤーの座標
+        prev_key = (layer_idx - 1, selected_head)
+        data_prev_L = data_dict.get(prev_key, None)
         if data_prev_L is None:
             continue
         reduced_prev_L = data_prev_L["reduced"]  # (seq_len, 2)
 
         for j in range(seq_len):
             label = "SelectedToken" if j == selected_token_idx else "OtherToken"
-            size_val = max(r[j] * 300, min_size)  # Relevance を円サイズに
+            # Relevance -> 円のサイズ
+            size_val = max(r[j] * 300, min_size)
             rows.append({
                 "x": reduced_prev_L[j, 0],
                 "y": reduced_prev_L[j, 1],
@@ -469,7 +495,6 @@ def animate_selected_head_across_layers_plotly_cross(
     # DataFrame にまとめる
     df = pd.DataFrame(rows)
 
-    # Plotly でアニメーション作成
     x_min = x_min_per_head[selected_head]
     x_max = x_max_per_head[selected_head]
     y_min = y_min_per_head[selected_head]
@@ -495,7 +520,7 @@ def animate_selected_head_across_layers_plotly_cross(
             "OtherToken": "blue",
             "NewVector": "gold",
         },
-        title=f"Head={selected_head}, Relevance={rule_type}"
+        title=f"Head={selected_head}, Relevance={rule_type}, Skip={use_skip_connection}"
     )
     return fig_animated
 
@@ -504,58 +529,15 @@ def animate_selected_head_across_layers_plotly_cross(
 # 7. Streamlit アプリ (メイン)
 ###############################################################################
 def render_page():
-    st.title("Cross-Layer Weighted V Visualization for BERT (Relevance)")
+    st.title("Cross-Layer Weighted V Visualization for BERT (Relevance) - Skip Connection ON/OFF")
 
-    # --- はじめの説明 (文章は markdown, 数式は latex を使う) ---
-    st.markdown("## BERT 内部のアテンション重みと Value ベクトルの更新可視化デモ")
+    # --- はじめの説明 ---
     st.markdown("""
-    以下では **BERT** の Self-Attention を題材に、
-    **トークン間のアテンション重み** (\\(\omega_{i j}\\)) と
-    **Value ベクトル** (\\(v_i\\)) の更新を可視化します。
+    ### BERT のアテンション + Value 更新可視化  
+    **Skip Connection (Residual) を ON/OFF** で切り替えて、更新後の Value ベクトルがどう変わるかを可視化します。
     """)
 
-    st.markdown("### 1. Attention Weight の定義")
-    st.latex(r"""
-      \omega_{i j} \;=\; 
-      \mathrm{softmax}_j\!\Bigl(\frac{q_i \,\cdot\, k_j}{\sqrt{d_k}}\Bigr),
-      \quad
-      \sum_{j} \omega_{i j} = 1,
-      \quad
-      \omega_{i j} \ge 0
-    """)
-
-    st.markdown("### 2. Value の更新")
-    st.latex(r"""
-      v'_i \;=\; \sum_{j} \omega_{i j}\; v_j
-      \;=\; 
-      v_i \;+\; \sum_{j} \omega_{i j}\,\bigl(v_j - v_i\bigr).
-    """)
-
-    st.markdown("""
-    ここで \\(v'_i\\) は「新しい」Value ベクトルであり、アテンション重みによって前レイヤーのベクトル \\(v_j\\) を合成したものとみなせます。
-    """)
-
-    st.markdown("### 3. Relevance の3種類の定義")
-    st.markdown("""
-    各トークン \\(i\\) がどのトークン \\(j\\) にどれだけ「寄与」を受けたかを、
-    カテゴリカル分布 \\(r_{i j}\\) (\\(\sum_j r_{i j} = 1, r_{i j} \ge 0\\)) として再定義する方法を考えます。
-    """)
-
-    st.latex(r"""
-      \begin{aligned}
-      (1)\;& r_{i j} \;=\; \omega_{i j} \\
-      (2)\;& r_{i j} \;\propto\; \omega_{i j}\;\|\,v_j - v_i\,\| \\
-      (3)\;& r_{i j} \;\propto\; \omega_{i j}\;\bigl|\,(v_j - v_i)\,\cdot\,(v'_i - v_i)\bigr|
-      \end{aligned}
-    """)
-
-    st.markdown("""
-    1. **raw**: 純粋にアテンション重みと同じ  
-    2. **weighted_distance**: 「ベクトル差の大きさ」を掛ける  
-    3. **weighted_projection**: 「最終的な更新方向への寄与」を内積で測り、その絶対値を掛ける  
-    """)
-
-    # BERTモデルをロード
+    # モデルロード
     model_name = "bert-base-uncased"
     tokenizer = BertTokenizer.from_pretrained(model_name)
     model = load_bert_with_qkv(model_name)
@@ -563,9 +545,10 @@ def render_page():
 
     num_layers = 12
     num_heads = 12
-    use_umap = True  # UMAP で次元削減
 
-    st.markdown("### 次元削減器 (UMAP または PCA) の準備")
+    # 次元削減器 (UMAP または PCA)
+    st.markdown("### 次元削減 (UMAP または PCA) の準備")
+    use_umap = True  # UMAP で行うか PCA で行うか; ここでは固定
     texts_for_fitting = ["My dog is cute. He likes play running."]
     reducers_per_head = fit_umap_or_pca_on_last_layer(
         texts=texts_for_fitting,
@@ -577,16 +560,23 @@ def render_page():
         cache_dir="./cache/qkv/"
     )
 
-    st.markdown("### デモ用テキストを入力")
+    # テキスト入力
+    st.markdown("### テキスト入力")
     text_to_plot = st.text_area(
         "入力する文章 (英語)",
         "My dog is cute. He likes play running."
     )
 
-    # レイヤーをまたいだデータ (v_{(L), i} の2D座標など) を取得
-    (data_dict, x_min_per_head, x_max_per_head,
-     y_min_per_head, y_max_per_head,
-     tokens, seq_len) = extract_plot_data_across_layers(
+    # Skip Connection チェックボックス
+    use_skip_connection = st.checkbox("Use Skip Connection?", value=True)
+
+    # データ取得
+    (
+        data_dict, 
+        x_min_per_head, x_max_per_head,
+        y_min_per_head, y_max_per_head,
+        tokens, seq_len
+    ) = extract_plot_data_across_layers(
         text=text_to_plot,
         tokenizer=tokenizer,
         model=model,
@@ -594,14 +584,13 @@ def render_page():
         num_layers=num_layers,
         num_heads=num_heads,
         max_length=16,
-        cache_dir="./cache/qkv/"
+        cache_dir="./cache/qkv/",
+        use_skip_connection=use_skip_connection
     )
-    st.success("Cross-layer でのアテンション & Value 情報を取得しました！")
+    st.success("Cross-layer でのアテンション & Value 情報を取得しました。")
 
-    st.markdown("### 可視化: Relevance の 3 種類を比較")
-
-    # トークン一覧を表示 (※[PAD] は除外済み)
-    st.write("#### トークン一覧")
+    # トークン一覧を表示
+    st.markdown("#### トークン一覧")
     st.write(tokens)
 
     # 選択トークン/ヘッド/ルールを UI から選択
@@ -615,9 +604,9 @@ def render_page():
         "Relevance の計算方法を選択",
         ["raw", "weighted_distance", "weighted_projection"],
         format_func=lambda x: {
-            "raw": "① raw: r_{i j} = w_{i j}",
-            "weighted_distance": "② weighted_distance: w_{i j} * ||v_j - v_i||",
-            "weighted_projection": "③ weighted_projection: w_{i j} * |(v_j - v_i)・(v'_i - v_i)|",
+            "raw": "① raw = w_{i j}",
+            "weighted_distance": "② weighted_distance = w_{i j} * ||v_j - v_i||",
+            "weighted_projection": "③ weighted_projection = w_{i j} * |(v_j - v_i)·(v'_i - v_i)|",
         }[x]
     )
 
@@ -633,10 +622,12 @@ def render_page():
             selected_head=selected_head,
             selected_token_idx=selected_token_idx,
             rule_type=rule_type,
-            num_layers=num_layers
+            num_layers=num_layers,
+            use_skip_connection=use_skip_connection
         )
         st.plotly_chart(fig_plotly)
 
 
+# Streamlit 実行エントリポイント
 if __name__ == "__main__":
     render_page()
