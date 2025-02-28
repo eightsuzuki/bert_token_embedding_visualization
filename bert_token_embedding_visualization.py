@@ -13,9 +13,28 @@ st.title("トークン埋め込みの分析と可視化")
 # ページ管理
 page = st.sidebar.selectbox(
     "ページを選択してください",
-    ["attention flow", "LRP", "qkv attention mapping", "attention map", "文脈構造の表現", "次元削減", "内部表現", "文字選択"]
+    [     "Attention Patterns",     "attention flow", "LRP", "qkv attention mapping", "attention map", "文脈構造の表現", "次元削減", "内部表現", "文字選択", 
+       # 新規ページ1
+        "Head Analysis",              # 新規ページ2
+        "Attention Entropy Analysis"  # 新規ページ3
+        ]
 )
 
+if page == "Attention Patterns":
+    import page9_analysis_bert_attention
+    page9_analysis_bert_attention.render_page()
+    st.stop()
+
+if page == "Head Analysis":
+    import page_head_analysis
+    page_head_analysis.render_page()
+    st.stop()
+
+if page == "Attention Entropy Analysis":
+    import page_attention_entropy
+    page_attention_entropy.render_page()
+    st.stop()
+    
 if page == "attention flow":
     import page8_attention_flow
     page8_attention_flow.render_page()
