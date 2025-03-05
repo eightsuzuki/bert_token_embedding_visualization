@@ -1,6 +1,7 @@
 import streamlit as st
 from transformers import BertTokenizer, BertModel
 import numpy as np
+
 # import pandas as pd
 # import plotly.express as px
 import os
@@ -13,61 +14,93 @@ st.title("トークン埋め込みの分析と可視化")
 # ページ管理
 page = st.sidebar.selectbox(
     "ページを選択してください",
-    [     "Attention Patterns",     "attention flow", "LRP", "qkv attention mapping", "attention map", "文脈構造の表現", "次元削減", "内部表現", "文字選択", 
-       # 新規ページ1
-        "Head Analysis",              # 新規ページ2
-        "Attention Entropy Analysis"  # 新規ページ3
-        ]
+    [
+        "Mapping1000LanguageModels",
+        "Attention Patterns",
+        "Syntax_Analysis",
+        "attention flow",
+        "LRP",
+        "qkv attention mapping",
+        "attention map",
+        "文脈構造の表現",
+        "次元削減",
+        "内部表現",
+        "文字選択",
+        "Head Analysis",
+        "Attention Entropy Analysis",
+    ],
 )
+
+if page == "Mapping1000LanguageModels":
+    import page11_Mapping1000LanguageModels
+    page11_Mapping1000LanguageModels.render()
+    st.stop()
+    
+if page == "Syntax_Analysis":
+    import page10_Syntax_Analysis
+
+    page10_Syntax_Analysis.render_page()
+    st.stop()
 
 if page == "Attention Patterns":
     import page9_analysis_bert_attention
+
     page9_analysis_bert_attention.render_page()
     st.stop()
 
 if page == "Head Analysis":
     import page_head_analysis
+
     page_head_analysis.render_page()
     st.stop()
 
 if page == "Attention Entropy Analysis":
     import page_attention_entropy
+
     page_attention_entropy.render_page()
     st.stop()
-    
+
 if page == "attention flow":
     import page8_attention_flow
+
     page8_attention_flow.render_page()
     st.stop()
 
 if page == "attention map":
     import page5_attention_map
+
     page5_attention_map.render_page()
     st.stop()
 
 if page == "qkv attention mapping":
     import page6_qkv_attention_mapping
+
     page6_qkv_attention_mapping.render_page()
     st.stop()
-    
+
 if page == "LRP":
     import page7_LRP
+
     page7_LRP.render_page()
     st.stop()
-    
+
+
 # モデルとトークナイザーのロード
 def load_model_and_tokenizer():
     tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
     model = BertModel.from_pretrained("bert-base-uncased", output_hidden_states=True)
     return tokenizer, model
 
+
 tokenizer, model = load_model_and_tokenizer()
 
 if page == "文脈構造の表現":
     import page4_context_structure_representation
+
     page4_context_structure_representation.render_page(tokenizer, model)
     st.stop()
- 
+
+
 # テキストを読み込み、トークン化して埋め込みを保存
 def process_and_save_embeddings():
     text = ""
@@ -76,7 +109,7 @@ def process_and_save_embeddings():
     os.makedirs(cache_dir, exist_ok=True)
     text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
     cache_file = os.path.join(cache_dir, f"{text_hash}_embeddings.json")
-    
+
     if os.path.exists(cache_file):
         with open(cache_file, "r", encoding="utf-8") as file:
             data = json.load(file)
@@ -92,11 +125,15 @@ def process_and_save_embeddings():
 
             for i in range(0, len(text), 512):
                 # textの長さに基づいて、512文字ごとにループを回す
-                chunk = text[i:i+512]
+                chunk = text[i : i + 512]
                 # textから512文字のチャンクを取得する
-                tokens = tokenizer(chunk, return_tensors="pt", truncation=True, padding=True)
+                tokens = tokenizer(
+                    chunk, return_tensors="pt", truncation=True, padding=True
+                )
                 # チャンクをトークン化し、PyTorchテンソルとして返す。必要に応じてトランケーションとパディングを行う
-                tokens_text.extend(tokenizer.convert_ids_to_tokens(tokens["input_ids"].squeeze(0)))
+                tokens_text.extend(
+                    tokenizer.convert_ids_to_tokens(tokens["input_ids"].squeeze(0))
+                )
                 # トークンIDを対応するトークンに変換し、tokens_textリストに追加する
                 outputs = model(**tokens)
                 # トークンをモデルに入力し、出力を取得する
@@ -104,19 +141,20 @@ def process_and_save_embeddings():
                 # モデルの出力から最後の隠れ層の状態を取得し、NumPy配列に変換してembeddingsリストに追加する
 
             embeddings = np.concatenate(embeddings, axis=0)
-            
+
         data = {
             "text": text,
             "tokens_text": tokens_text,
-            "embeddings": embeddings.tolist()
+            "embeddings": embeddings.tolist(),
         }
         with open(cache_file, "w", encoding="utf-8") as file:
-            json.dump(data, file)   
+            json.dump(data, file)
 
         st.write(f"埋め込みをBERTから生成し、\n{cache_file}\n に保存されました")
 
     st.write(f"BERT embeddings:", embeddings.shape)
     return text, tokens_text, embeddings
+
 
 text, tokens_text, embeddings = process_and_save_embeddings()
 
@@ -128,12 +166,17 @@ if page == "次元削減":
     st.write(f"トークン数: {len(tokens_text)}")
 
     import page1_dimensionality_reduction
+
     page1_dimensionality_reduction.render_page(text, tokens_text, embeddings)
 
 elif page == "内部表現":
     import page2_internal_representations
+
     page2_internal_representations.render_page(text)
 
 elif page == "文字選択":
     import page3_dimensionality_reduction_select_word
-    page3_dimensionality_reduction_select_word.render_page(text, tokens_text, embeddings)
+
+    page3_dimensionality_reduction_select_word.render_page(
+        text, tokens_text, embeddings
+    )
