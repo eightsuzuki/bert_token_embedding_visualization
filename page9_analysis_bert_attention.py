@@ -680,6 +680,8 @@ def animate_selected_head_across_layers_plotly(data_dict, x_min_per_head, x_max_
     )
     return fig_animated
 
+
+
 ###############################################################################
 # 9. 可視化の実行（Plotly 版と新規のクラスタリング図）
 ###############################################################################
@@ -820,7 +822,7 @@ def render_page():
     
     # Streamlit上に各ヘッドの情報を表示
     if st.button("Show Attention Map (igraph SVG) for 選択ヘッド"):
-        import plot_attn_igraph
+        # import plot_attn_igraph
         # plot_attn_igraph.display_attn_info(data, selected_heads)
         with st.spinner("Attention マップを描画中..."):
             svg_data_url = plot_attn_igraph_svg(data, selected_heads,attn_sep=3, 
