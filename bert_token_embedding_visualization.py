@@ -15,8 +15,8 @@ st.title("トークン埋め込みの分析と可視化")
 page = st.sidebar.selectbox(
     "ページを選択してください",
     [
-        "Mapping1000LanguageModels",
         "Attention Patterns",
+        "Mapping1000LanguageModels",
         "Syntax_Analysis",
         "attention flow",
         "LRP",
